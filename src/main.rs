@@ -6,7 +6,7 @@ use crossterm::{
 };
 use ratatui::{prelude::*, widgets::*};
 use std::io;
-use peroxide::{App, AppError, FormState, InputMode, SettingsTab};
+use peroxide::{App, AppError, FormState, InputMode, FileBrowserMode};
 
 fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
@@ -242,23 +242,98 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     KeyCode::Down => {
                         app.settings_selected_item += 1;
                     }
-                    KeyCode::Enter => {
-                        match app.settings_tab {
-                            SettingsTab::SshKeys => {
-                                match app.settings_selected_item {
-                                    0 => if let Err(e) = app.select_key_file() {
-                                        app.show_error(e.to_string());
-                                    },
-                                    1 => if let Err(e) = app.select_key_folder() {
-                                        app.show_error(e.to_string());
-                                    },
-                                    _ => {}
-                                }
-                                if let Err(e) = app.save_additional_keys() {
-                                    app.show_error(format!("Failed to save additional keys: {}", e));
-                                }
+                    KeyCode::Char('d') => {
+                        if app.settings_selected_item >= 3 && app.settings_selected_item < app.ssh_keys.len() + 3 {
+                            let key_index = app.settings_selected_item - 3;
+                            app.remove_ssh_key(key_index);
+                            if let Err(e) = app.save_additional_keys() {
+                                app.show_error(format!("Failed to save additional keys: {}", e));
                             }
-                            SettingsTab::General => {
+                        }
+                    }
+                    KeyCode::Enter => {
+                        match app.settings_selected_item {
+                            0 => if let Err(e) = app.select_key_file() {
+                                app.show_error(e.to_string());
+                            },
+                            1 => if let Err(e) = app.select_key_folder() {
+                                app.show_error(e.to_string());
+                            },
+                            _ => {}
+                        }
+                        if let Err(e) = app.save_additional_keys() {
+                            app.show_error(format!("Failed to save additional keys: {}", e));
+                        }
+                    }
+                    _ => {}
+                },
+                InputMode::FileBrowser(mode) => match key.code {
+                    KeyCode::Esc => {
+                        app.input_mode = InputMode::Settings;
+                        app.file_browser = None;
+                    }
+                    KeyCode::Up => {
+                        if let Some(browser) = &mut app.file_browser {
+                            browser.move_up();
+                        }
+                    }
+                    KeyCode::Down => {
+                        if let Some(browser) = &mut app.file_browser {
+                            browser.move_down();
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if let Some(browser) = &mut app.file_browser {
+                            match mode {
+                                FileBrowserMode::SingleFile => {
+                                    if let Some(path) = browser.get_selected_path() {
+                                        if path.is_dir() {
+                                            browser.enter_directory();
+                                        } else {
+                                            if browser.is_valid_ssh_key(&path) {
+                                                app.add_key_path(path);
+                                                if let Err(e) = app.save_additional_keys() {
+                                                    app.show_error(format!("Failed to save additional keys: {}", e));
+                                                }
+                                                app.input_mode = InputMode::Settings;
+                                                app.file_browser = None;
+                                            } else {
+                                                app.show_error("Not a valid SSH key file");
+                                            }
+                                        }
+                                    }
+                                }
+                                FileBrowserMode::Directory => {
+                                    if let Some(path) = browser.get_selected_path() {
+                                        if path == browser.current_path {
+                                            let mut valid_paths = Vec::new();
+                                            if let Ok(entries) = std::fs::read_dir(&path) {
+                                                for entry in entries.flatten() {
+                                                    let path = entry.path();
+                                                    if browser.is_valid_ssh_key(&path) {
+                                                        valid_paths.push(path);
+                                                    }
+                                                }
+                                            }
+                                            
+                                            let added = valid_paths.len();
+                                            for path in valid_paths {
+                                                app.add_key_path(path);
+                                            }
+                                            
+                                            if let Err(e) = app.save_additional_keys() {
+                                                app.show_error(format!("Failed to save additional keys: {}", e));
+                                            }
+                                            app.show_error(format!("Added {} SSH keys from folder", added));
+                                            app.input_mode = InputMode::Settings;
+                                            app.file_browser = None;
+                                        } else if path.ends_with("..") {
+                                            browser.enter_directory();
+                                        } else if path.is_dir() {
+                                            browser.enter_directory();
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -285,17 +360,19 @@ fn ui(f: &mut Frame, app: &App) {
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(title, chunks[0]);
 
-    match app.input_mode {
+    match &app.input_mode {
         InputMode::Normal => render_connections(f, app, chunks[1]),
         InputMode::Adding | InputMode::Editing => render_form(f, app, chunks[1]),
         InputMode::Settings => render_settings(f, app, chunks[1]),
+        InputMode::FileBrowser(_mode) => render_file_browser(f, app, chunks[1]),
     }
 
-    let help = match app.input_mode {
+    let help = match &app.input_mode {
         InputMode::Normal => "q: Quit | a: Add | e: Edit | d: Delete | y: Duplicate | s: Settings | ↑↓: Navigate",
         InputMode::Adding => "Esc: Cancel | Tab: Next Field | Enter: Save | ←→: Select SSH Key",
         InputMode::Editing => "Esc: Cancel | Tab: Next Field | Enter: Update | ←→: Select SSH Key",
-        InputMode::Settings => "Esc: Back | Tab: Switch Tab | ↑↓: Navigate | Enter: Select",
+        InputMode::Settings => "Esc: Back | Tab: Switch Tab | ↑↓: Navigate | Enter: Select | d: Delete Key",
+        InputMode::FileBrowser(_mode) => "Esc: Cancel | ↑↓: Navigate | Enter: Select/Enter Directory",
     };
 
     let help = Paragraph::new(help)
@@ -444,52 +521,66 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let tabs = vec!["SSH Keys", "General"];
+    let tabs = vec!["SSH Keys"];
     let tabs = Tabs::new(tabs)
-        .select(match app.settings_tab {
-            SettingsTab::SshKeys => 0,
-            SettingsTab::General => 1,
-        })
+        .select(0)
         .block(Block::default().borders(Borders::ALL).title("Settings"))
         .highlight_style(Style::default().fg(Color::Yellow));
     f.render_widget(tabs, chunks[0]);
 
-    match app.settings_tab {
-        SettingsTab::SshKeys => {
-            let items = vec![
-                ListItem::new("Add SSH Key File"),
-                ListItem::new("Add SSH Key Folder"),
-                ListItem::new("Current SSH Keys:"),
-            ];
+    let items = vec![
+        ListItem::new("Add SSH Key File"),
+        ListItem::new("Add SSH Key Folder"),
+        ListItem::new("Current SSH Keys:"),
+    ];
 
-            let mut key_items: Vec<ListItem> = app.ssh_keys
-                .iter()
-                .map(|path| {
-                    ListItem::new(format!("  {}", 
-                        path.file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                    ))
-                })
-                .collect();
+    let mut key_items: Vec<ListItem> = app.ssh_keys
+        .iter()
+        .map(|path| {
+            ListItem::new(format!("  {}", 
+                path.file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+            ))
+        })
+        .collect();
 
-            let mut all_items = items;
-            all_items.append(&mut key_items);
+    let mut all_items = items;
+    all_items.append(&mut key_items);
 
-            let list = List::new(all_items)
-                .block(Block::default().borders(Borders::ALL))
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+    let list = List::new(all_items)
+        .block(Block::default().borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
-            f.render_stateful_widget(
-                list,
-                chunks[1],
-                &mut ListState::default().with_selected(Some(app.settings_selected_item)),
-            );
-        }
-        SettingsTab::General => {
-            let paragraph = Paragraph::new("General Settings (Coming Soon)")
-                .block(Block::default().borders(Borders::ALL));
-            f.render_widget(paragraph, chunks[1]);
-        }
+    f.render_stateful_widget(
+        list,
+        chunks[1],
+        &mut ListState::default().with_selected(Some(app.settings_selected_item)),
+    );
+}
+
+fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
+    if let Some(browser) = &app.file_browser {
+        let items: Vec<ListItem> = browser
+            .entries
+            .iter()
+            .map(|path| {
+                let name = browser.get_display_name(path);
+                let prefix = if path.is_dir() { "📁 " } else { "📄 " };
+                ListItem::new(format!("{}{}", prefix, name))
+            })
+            .collect();
+
+        let title = format!("Browse: {}", browser.current_path.display());
+        let list = List::new(items)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol("> ");
+
+        f.render_stateful_widget(
+            list,
+            area,
+            &mut ListState::default().with_selected(Some(browser.selected)),
+        );
     }
 } 

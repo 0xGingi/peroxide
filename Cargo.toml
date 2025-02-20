@@ -1,6 +1,6 @@
 [package]
 name = "peroxide"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [dependencies]
@@ -12,4 +12,3 @@ dirs = "6.0"
 anyhow = "1.0"
 ssh2 = "0.9.5"
 tokio = { version = "1.43.0", features = ["full"] }
-rfd = { version = "0.15.2", default-features = false, features = ["gtk3"] }

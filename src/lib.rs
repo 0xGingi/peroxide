@@ -4,7 +4,6 @@ use std::fs;
 use anyhow::{Result, Context};
 use ssh2::Session;
 use std::net::TcpStream;
-use rfd;
 use std::process::Command;
 use std::fmt;
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
@@ -13,6 +12,23 @@ use crossterm::terminal::{Clear, ClearType};
 use std::io::Write;
 use std::thread;
 use std::time::Duration;
+mod file_browser;
+use file_browser::FileBrowser;
+
+#[derive(Debug, PartialEq)]
+pub enum InputMode {
+    Normal,
+    Editing,
+    Adding,
+    Settings,
+    FileBrowser(FileBrowserMode),
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum FileBrowserMode {
+    SingleFile,
+    Directory,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshConnection {
@@ -26,18 +42,9 @@ pub struct SshConnection {
     pub last_connection_status: Option<bool>,
 }
 
-#[derive(Debug, PartialEq)]
-pub enum InputMode {
-    Normal,
-    Editing,
-    Adding,
-    Settings,
-}
-
 #[derive(Debug)]
 pub enum SettingsTab {
     SshKeys,
-    General,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +69,7 @@ pub struct App {
     pub error_message: Option<String>,
     pub settings_tab: SettingsTab,
     pub settings_selected_item: usize,
+    pub file_browser: Option<FileBrowser>,
 }
 
 #[derive(Debug)]
@@ -130,6 +138,7 @@ impl App {
             error_message: None,
             settings_tab: SettingsTab::SshKeys,
             settings_selected_item: 0,
+            file_browser: None,
         }
     }
 
@@ -392,17 +401,15 @@ impl App {
     }
 
     pub fn select_key_file(&mut self) -> Result<()> {
-        let path = rfd::FileDialog::new()
-            .add_filter("SSH Keys", &["pem", "key"])
-            .set_directory(dirs::home_dir().unwrap_or_default())
-            .pick_file();
-        
-        if let Some(path) = path {
-            self.add_key_path(path);
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("No file selected"))
-        }
+        self.file_browser = Some(FileBrowser::new(dirs::home_dir().unwrap_or_default()));
+        self.input_mode = InputMode::FileBrowser(FileBrowserMode::SingleFile);
+        Ok(())
+    }
+
+    pub fn select_key_folder(&mut self) -> Result<()> {
+        self.file_browser = Some(FileBrowser::new(dirs::home_dir().unwrap_or_default()));
+        self.input_mode = InputMode::FileBrowser(FileBrowserMode::Directory);
+        Ok(())
     }
 
     pub fn test_connection(&mut self, idx: usize) -> Result<(), AppError> {
@@ -529,44 +536,21 @@ impl App {
         }
     }
 
-    pub fn select_key_folder(&mut self) -> Result<()> {
-        let folder = rfd::FileDialog::new()
-            .set_directory(dirs::home_dir().unwrap_or_default())
-            .pick_folder();
-        
-        if let Some(folder) = folder {
-            if let Ok(entries) = std::fs::read_dir(&folder) {
-                let mut added = 0;
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let file_name = path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("");
-                        
-                        if !file_name.contains("known_hosts") &&
-                           !file_name.contains("authorized_keys") &&
-                           !file_name.contains("config") &&
-                           !file_name.ends_with(".pub") &&
-                           !file_name.starts_with(".") {
-                            self.add_key_path(path);
-                            added += 1;
-                        }
-                    }
-                }
-                self.show_error(format!("Added {} SSH keys from folder", added));
-            }
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!("No folder selected"))
-        }
+    pub fn next_settings_tab(&mut self) {
     }
 
-    pub fn next_settings_tab(&mut self) {
-        self.settings_tab = match self.settings_tab {
-            SettingsTab::SshKeys => SettingsTab::General,
-            SettingsTab::General => SettingsTab::SshKeys,
-        };
-        self.settings_selected_item = 0;
+    pub fn remove_ssh_key(&mut self, index: usize) {
+        if index < self.ssh_keys.len() {
+            let path = self.ssh_keys[index].clone();
+            self.ssh_keys.remove(index);
+            
+            if let Some(additional_index) = self.additional_key_paths.iter().position(|p| p == &path) {
+                self.additional_key_paths.remove(additional_index);
+            }
+            
+            if self.settings_selected_item > 3 && self.settings_selected_item >= 3 + self.ssh_keys.len() {
+                self.settings_selected_item -= 1;
+            }
+        }
     }
 } 
