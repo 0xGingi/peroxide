@@ -18,6 +18,17 @@ A terminal-based SSH connection manager written in Rust, featuring an intuitive 
 
 ## Installation
 
+### Arch User Repository
+
+#### Binary
+
+[![binary](https://img.shields.io/aur/version/peroxide-ssh-manager-bin)](https://aur.archlinux.org/packages/peroxide-ssh-manager-bin)
+
+#### Git
+
+[![git](https://img.shields.io/aur/version/peroxide-ssh-manager-git)](https://aur.archlinux.org/packages/peroxide-ssh-manager-git)
+
+
 ### From Release
 
 Download the latest release from the [Releases](https://github.com/0xgingi/peroxide/releases) page.
