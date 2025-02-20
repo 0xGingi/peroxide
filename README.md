@@ -75,4 +75,3 @@ Peroxide automatically stores its configuration in:
 ## Notes
 
 - Windows and MacOS have not been tested
-- Adding SSH Keys from outside the `.ssh` directory has not been thoroughly tested
