@@ -450,7 +450,19 @@ impl App {
     pub fn execute_ssh(&self) -> Result<bool, AppError> {
         let idx = self.selected_connection.ok_or(AppError::NoConnectionSelected)?;
         let conn = &self.connections[idx];
-        let mut cmd = Command::new("ssh");
+        
+        let mut cmd;
+        if let Some(password) = &conn.password {
+            if conn.key_path.is_none() {
+                cmd = Command::new("sshpass");
+                cmd.arg("-p").arg(password);
+                cmd.arg("ssh");
+            } else {
+                cmd = Command::new("ssh");
+            }
+        } else {
+            cmd = Command::new("ssh");
+        }
         
         if conn.port != 22 {
             cmd.arg("-p").arg(conn.port.to_string());

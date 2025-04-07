@@ -31,6 +31,8 @@ A terminal-based SSH connection manager written in Rust, featuring an intuitive 
 
 ### From Release
 
+Ensure you have sshpass installed from your package manager.
+
 Download the latest release from the [Releases](https://github.com/0xgingi/peroxide/releases) page.
 
 ```bash
@@ -39,7 +41,8 @@ sudo cp peroxide /usr/local/bin/
 ```
 
 ### From Source
-Make sure you have Rust installed ([rustup](https://rustup.rs/)), then:
+
+Make sure you have Rust installed ([rustup](https://rustup.rs/)) and sshpass, then:
 
 ```bash
 git clone https://github.com/0xgingi/peroxide.git
