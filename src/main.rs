@@ -437,6 +437,7 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
+            Constraint::Length(3),
         ])
         .split(area);
 
@@ -446,6 +447,7 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         ("Port", &app.form_state.port),
         ("Username", &app.form_state.username),
         ("Password", &app.form_state.password),
+        ("Key Passphrase", &app.form_state.key_passphrase),
     ];
 
     for (i, (title, content)) in form_fields.iter().enumerate() {
@@ -455,7 +457,7 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
             Style::default()
         };
 
-        let display_content = if i == 4 && !content.is_empty() {
+        let display_content = if (i == 4 || i == 5) && !content.is_empty() {
             "*".repeat(content.len())
         } else {
             content.to_string()
@@ -503,13 +505,13 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default()
             .title("SSH Key (←→ to select)")
             .borders(Borders::ALL)
-            .style(if app.form_state.active_field == 5 {
+            .style(if app.form_state.active_field == 6 {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             }));
 
-    f.render_widget(key_paragraph, chunks[5]);
+    f.render_widget(key_paragraph, chunks[6]);
 }
 
 fn render_settings(f: &mut Frame, app: &App, area: Rect) {

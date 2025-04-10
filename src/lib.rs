@@ -38,6 +38,7 @@ pub struct SshConnection {
     pub username: String,
     pub password: Option<String>,
     pub key_path: Option<PathBuf>,
+    pub key_passphrase: Option<String>,
     #[serde(skip)]
     pub last_connection_status: Option<bool>,
 }
@@ -54,6 +55,7 @@ pub struct FormState {
     pub port: String,
     pub username: String,
     pub password: String,
+    pub key_passphrase: String,
     pub selected_key: Option<usize>,
     pub active_field: usize,
 }
@@ -97,6 +99,7 @@ impl FormState {
             port: String::from("22"),
             username: String::new(),
             password: String::new(),
+            key_passphrase: String::new(),
             selected_key: None,
             active_field: 0,
         }
@@ -169,15 +172,15 @@ impl App {
     }
 
     pub fn next_field(&mut self) {
-        self.form_state.active_field = (self.form_state.active_field + 1) % 6;
+        self.form_state.active_field = (self.form_state.active_field + 1) % 7;
     }
 
     pub fn previous_field(&mut self) {
-        self.form_state.active_field = if self.form_state.active_field == 0 {
-            5
+        if self.form_state.active_field == 0 {
+            self.form_state.active_field = 6;
         } else {
-            self.form_state.active_field - 1
-        };
+            self.form_state.active_field -= 1;
+        }
     }
 
     pub fn save_connection(&mut self) -> Result<(), &'static str> {
@@ -196,6 +199,12 @@ impl App {
         } else {
             Some(self.form_state.password.clone())
         };
+        
+        let key_passphrase = if self.form_state.key_passphrase.is_empty() {
+            None
+        } else {
+            Some(self.form_state.key_passphrase.clone())
+        };
 
         let connection = SshConnection {
             name: self.form_state.name.clone(),
@@ -204,6 +213,7 @@ impl App {
             username: self.form_state.username.clone(),
             password,
             key_path,
+            key_passphrase,
             last_connection_status: None,
         };
 
@@ -256,19 +266,21 @@ impl App {
                     conn.port.to_string(),
                     conn.username.clone(),
                     conn.password.clone().unwrap_or_default(),
+                    conn.key_passphrase.clone().unwrap_or_default(),
                     selected_key,
                 ))
             } else {
                 None
             };
 
-            if let Some((name, host, port, username, password, selected_key)) = connection_data {
+            if let Some((name, host, port, username, password, key_passphrase, selected_key)) = connection_data {
                 self.form_state = FormState {
                     name,
                     host,
                     port,
                     username,
                     password,
+                    key_passphrase,
                     selected_key,
                     active_field: 0,
                 };
@@ -298,6 +310,12 @@ impl App {
             } else {
                 Some(self.form_state.password.clone())
             };
+            
+            let key_passphrase = if self.form_state.key_passphrase.is_empty() {
+                None
+            } else {
+                Some(self.form_state.key_passphrase.clone())
+            };
 
             let connection = SshConnection {
                 name: self.form_state.name.clone(),
@@ -306,6 +324,7 @@ impl App {
                 username: self.form_state.username.clone(),
                 password,
                 key_path,
+                key_passphrase,
                 last_connection_status: None,
             };
 
@@ -326,7 +345,7 @@ impl App {
     }
 
     pub fn select_ssh_key(&mut self, direction: i8) {
-        if self.form_state.active_field == 5 && !self.ssh_keys.is_empty() {
+        if self.form_state.active_field == 6 && !self.ssh_keys.is_empty() {
             let total_keys = self.ssh_keys.len();
             let current = self.form_state.selected_key.unwrap_or(0);
             
@@ -362,7 +381,7 @@ impl App {
                 &conn.username,
                 None,
                 key_path,
-                None,
+                conn.key_passphrase.as_deref(),
             ).map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
         } else if let Some(password) = &conn.password {
             sess.userauth_password(&conn.username, password)
@@ -430,7 +449,7 @@ impl App {
                     &conn.username,
                     None,
                     key_path,
-                    None,
+                    conn.key_passphrase.as_deref(),
                 ).map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
             } else if let Some(password) = &conn.password {
                 sess.userauth_password(&conn.username, password)
@@ -467,9 +486,62 @@ impl App {
         if conn.port != 22 {
             cmd.arg("-p").arg(conn.port.to_string());
         }
+        
+        let mut connection_args = Vec::new();
+        
         if let Some(key_path) = &conn.key_path {
-            cmd.arg("-i").arg(key_path);
+            connection_args.push("-i".to_string());
+            connection_args.push(key_path.to_string_lossy().to_string());
+            
+            if let Some(passphrase) = &conn.key_passphrase {
+                let mut ssh_args = connection_args.clone();
+                
+                let conn_string = format!("{}@{}", conn.username, conn.host);
+                ssh_args.push(conn_string);
+                
+                cmd = Command::new("sshpass");
+                cmd.arg("-P").arg("Enter passphrase for key");
+                cmd.arg("-p").arg(passphrase);
+                
+                cmd.arg("ssh");
+                for arg in ssh_args {
+                    cmd.arg(arg);
+                }
+                
+                disable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to reset terminal mode: {}", e)))?;
+                crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen, DisableMouseCapture)
+                    .map_err(|e| AppError::ConnectionFailed(format!("Failed to leave alternate screen: {}", e)))?;
+                std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
+
+                cmd.env("TERM", "xterm-256color")
+                    .stdin(std::process::Stdio::inherit())
+                    .stdout(std::process::Stdio::inherit())
+                    .stderr(std::process::Stdio::inherit());
+                let status = cmd.status().map_err(|e| AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)))?;
+                if !status.success() {
+                    return Err(AppError::ConnectionFailed("SSH process failed".to_string()));
+                }
+
+                thread::sleep(Duration::from_millis(50));
+
+                crossterm::execute!(
+                    std::io::stdout(),
+                    Clear(ClearType::All),
+                    crossterm::terminal::EnterAlternateScreen,
+                    EnableMouseCapture
+                ).map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal state: {}", e)))?;
+                std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
+                
+                enable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e)))?;
+                
+                return Ok(true);
+            }
         }
+        
+        for arg in connection_args {
+            cmd.arg(arg);
+        }
+        
         let connection_string = format!("{}@{}", conn.username, conn.host);
         cmd.arg(connection_string);
 
