@@ -505,7 +505,7 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default()
             .title("SSH Key (←→ to select)")
             .borders(Borders::ALL)
-            .style(if app.form_state.active_field == 6 {
+            .style(if app.form_state.active_field == 5 {
                 Style::default().fg(Color::Yellow)
             } else {
                 Style::default()

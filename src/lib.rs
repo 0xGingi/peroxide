@@ -156,6 +156,7 @@ impl App {
             }
             3 => self.form_state.username.push(c),
             4 => self.form_state.password.push(c),
+            5 => self.form_state.key_passphrase.push(c),
             _ => {}
         }
     }
@@ -167,6 +168,7 @@ impl App {
             2 => { self.form_state.port.pop(); }
             3 => { self.form_state.username.pop(); }
             4 => { self.form_state.password.pop(); }
+            5 => { self.form_state.key_passphrase.pop(); }
             _ => {}
         }
     }
@@ -345,7 +347,7 @@ impl App {
     }
 
     pub fn select_ssh_key(&mut self, direction: i8) {
-        if self.form_state.active_field == 6 && !self.ssh_keys.is_empty() {
+        if self.form_state.active_field == 5 && !self.ssh_keys.is_empty() {
             let total_keys = self.ssh_keys.len();
             let current = self.form_state.selected_key.unwrap_or(0);
             
