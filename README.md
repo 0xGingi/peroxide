@@ -47,7 +47,7 @@ Make sure you have Rust installed ([rustup](https://rustup.rs/)) and sshpass, th
 ```bash
 git clone https://github.com/0xgingi/peroxide.git
 cd peroxide
-cargo install --release
+cargo build --release
 sudo cp target/release/peroxide /usr/local/bin/
 ```
 
