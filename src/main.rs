@@ -80,7 +80,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                             if selected > 0 {
                                 app.selected_connection = Some(selected - 1);
                             }
-                        } else {
+                        } else if !app.connections.is_empty() {
                             app.selected_connection = Some(0);
                         }
                     }
@@ -89,7 +89,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                             if selected < app.connections.len().saturating_sub(1) {
                                 app.selected_connection = Some(selected + 1);
                             }
-                        } else {
+                        } else if !app.connections.is_empty() {
                             app.selected_connection = Some(0);
                         }
                     }

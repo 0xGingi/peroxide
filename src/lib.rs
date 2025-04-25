@@ -434,6 +434,10 @@ impl App {
     }
 
     pub fn test_connection(&mut self, idx: usize) -> Result<(), AppError> {
+        if idx >= self.connections.len() {
+            return Err(AppError::NoConnectionSelected);
+        }
+        
         let conn = &mut self.connections[idx];
         
         let result = (|| {
@@ -470,6 +474,10 @@ impl App {
 
     pub fn execute_ssh(&self) -> Result<bool, AppError> {
         let idx = self.selected_connection.ok_or(AppError::NoConnectionSelected)?;
+        if idx >= self.connections.len() {
+            return Err(AppError::NoConnectionSelected);
+        }
+        
         let conn = &self.connections[idx];
         
         let mut cmd;
@@ -606,7 +614,15 @@ impl App {
     }
 
     pub fn duplicate_connection(&mut self) -> Result<(), &'static str> {
+        if self.connections.is_empty() {
+            return Err("No connections to duplicate");
+        }
+        
         if let Some(idx) = self.selected_connection {
+            if idx >= self.connections.len() {
+                return Err("Invalid connection selected");
+            }
+            
             if let Some(conn) = self.connections.get(idx) {
                 let mut new_conn = conn.clone();
                 new_conn.name = format!("{} (copy)", conn.name);
