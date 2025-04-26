@@ -22,6 +22,14 @@ pub enum InputMode {
     Adding,
     Settings,
     FileBrowser(FileBrowserMode),
+    Confirmation(ConfirmationMode),
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
+pub enum ConfirmationMode {
+    Delete,
+    Duplicate,
+    Update,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -72,6 +80,7 @@ pub struct App {
     pub settings_tab: SettingsTab,
     pub settings_selected_item: usize,
     pub file_browser: Option<FileBrowser>,
+    pub confirmation_selected: bool,
 }
 
 #[derive(Debug)]
@@ -130,7 +139,7 @@ impl App {
                 }
             }
         }
-
+        
         Self {
             connections: Vec::new(),
             ssh_keys,
@@ -142,6 +151,7 @@ impl App {
             settings_tab: SettingsTab::SshKeys,
             settings_selected_item: 0,
             file_browser: None,
+            confirmation_selected: false,
         }
     }
 
@@ -150,7 +160,7 @@ impl App {
             0 => self.form_state.name.push(c),
             1 => self.form_state.host.push(c),
             2 => {
-                if c.is_ascii_digit() && self.form_state.port.len() < 5 {
+                if c.is_digit(10) {
                     self.form_state.port.push(c);
                 }
             }
@@ -174,14 +184,155 @@ impl App {
     }
 
     pub fn next_field(&mut self) {
-        self.form_state.active_field = (self.form_state.active_field + 1) % 7;
+        self.form_state.active_field = (self.form_state.active_field + 1) % 6;
     }
 
     pub fn previous_field(&mut self) {
-        if self.form_state.active_field == 0 {
-            self.form_state.active_field = 6;
-        } else {
+        if self.form_state.active_field > 0 {
             self.form_state.active_field -= 1;
+        } else {
+            self.form_state.active_field = 5;
+        }
+    }
+
+    pub fn select_ssh_key(&mut self, direction: i32) {
+        let total_keys = self.ssh_keys.len() + 1;
+        
+        let new_selected = match self.form_state.selected_key {
+            Some(current) => {
+                let new_val = (current as i32 + direction) % total_keys as i32;
+                if new_val < 0 {
+                    (total_keys as i32 + new_val) as usize
+                } else {
+                    new_val as usize
+                }
+            }
+            None => {
+                if direction > 0 { 0 } else { total_keys - 1 }
+            }
+        };
+        
+        self.form_state.selected_key = Some(new_selected);
+    }
+    
+    pub fn confirm_action(&mut self, mode: ConfirmationMode) {
+        self.input_mode = InputMode::Confirmation(mode);
+        self.confirmation_selected = false;
+    }
+
+    pub fn perform_confirmed_action(&mut self) -> Result<(), &'static str> {
+        match self.input_mode {
+            InputMode::Confirmation(ConfirmationMode::Delete) => {
+                if let Some(idx) = self.selected_connection {
+                    self.connections.remove(idx);
+                    if idx >= self.connections.len() && idx > 0 {
+                        self.selected_connection = Some(idx - 1);
+                    }
+                }
+                Ok(())
+            },
+            InputMode::Confirmation(ConfirmationMode::Duplicate) => {
+                self.duplicate_connection_impl()
+            },
+            InputMode::Confirmation(ConfirmationMode::Update) => {
+                self.update_connection_impl()
+            },
+            _ => Ok(()),
+        }
+    }
+    
+    pub fn cancel_confirmation(&mut self) {
+        self.input_mode = InputMode::Normal;
+    }
+    
+    pub fn toggle_confirmation_selection(&mut self) {
+        self.confirmation_selected = !self.confirmation_selected;
+    }
+    
+    fn duplicate_connection_impl(&mut self) -> Result<(), &'static str> {
+        if self.connections.is_empty() {
+            return Err("No connections to duplicate");
+        }
+        
+        if let Some(idx) = self.selected_connection {
+            if idx >= self.connections.len() {
+                return Err("Invalid connection selected");
+            }
+            
+            if let Some(conn) = self.connections.get(idx) {
+                let mut new_conn = conn.clone();
+                new_conn.name = format!("{} (copy)", conn.name);
+                new_conn.last_connection_status = None;
+                self.connections.push(new_conn);
+                self.selected_connection = Some(self.connections.len() - 1);
+                Ok(())
+            } else {
+                Err("Failed to get connection")
+            }
+        } else {
+            Err("No connection selected")
+        }
+    }
+
+    pub fn duplicate_connection(&mut self) -> Result<(), &'static str> {
+        if self.connections.is_empty() {
+            return Err("No connections to duplicate");
+        }
+        
+        if self.selected_connection.is_none() {
+            return Err("No connection selected");
+        }
+        
+        self.confirm_action(ConfirmationMode::Duplicate);
+        Ok(())
+    }
+    
+    fn update_connection_impl(&mut self) -> Result<(), &'static str> {
+        if let Some(idx) = self.selected_connection {
+            if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+                return Err("Required fields cannot be empty");
+            }
+
+            let port = self.form_state.port.parse().unwrap_or(22);
+            if port == 0 {
+                return Err("Invalid port number");
+            }
+
+            let key_path = self.form_state.selected_key.and_then(|idx| {
+                if idx == 0 || idx > self.ssh_keys.len() {
+                    None
+                } else {
+                    Some(self.ssh_keys[idx - 1].clone())
+                }
+            });
+
+            let password = if self.form_state.password.is_empty() {
+                None
+            } else {
+                Some(self.form_state.password.clone())
+            };
+            
+            let key_passphrase = if self.form_state.key_passphrase.is_empty() {
+                None
+            } else {
+                Some(self.form_state.key_passphrase.clone())
+            };
+
+            let connection = SshConnection {
+                name: self.form_state.name.clone(),
+                host: self.form_state.host.clone(),
+                port,
+                username: self.form_state.username.clone(),
+                password,
+                key_path,
+                key_passphrase,
+                last_connection_status: None,
+            };
+
+            self.connections[idx] = connection;
+            Ok(())
+        } else {
+            Err("No connection selected")
         }
     }
 
@@ -195,7 +346,14 @@ impl App {
             return Err("Invalid port number");
         }
 
-        let key_path = self.form_state.selected_key.map(|idx| self.ssh_keys[idx].clone());
+        let key_path = self.form_state.selected_key.and_then(|idx| {
+            if idx == 0 || idx > self.ssh_keys.len() {
+                None
+            } else {
+                Some(self.ssh_keys[idx - 1].clone())
+            }
+        });
+
         let password = if self.form_state.password.is_empty() {
             None
         } else {
@@ -257,9 +415,9 @@ impl App {
         if let Some(idx) = self.selected_connection {
             let connection_data = if let Some(conn) = self.connections.get(idx) {
                 let selected_key = if let Some(key_path) = &conn.key_path {
-                    self.ssh_keys.iter().position(|p| p == key_path)
+                    self.ssh_keys.iter().position(|p| p == key_path).map(|pos| pos + 1)
                 } else {
-                    None
+                    Some(0)
                 };
 
                 Some((
@@ -292,76 +450,17 @@ impl App {
     }
 
     pub fn update_connection(&mut self) -> Result<(), &'static str> {
-        if let Some(idx) = self.selected_connection {
-            if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
-                return Err("Required fields cannot be empty");
-            }
-
-            let port = self.form_state.port.parse().unwrap_or(22);
-            if port == 0 {
-                return Err("Invalid port number");
-            }
-
-            let key_path = self.form_state.selected_key.map(|idx| {
-                let path = self.ssh_keys[idx].clone();
-                path
-            });
-
-            let password = if self.form_state.password.is_empty() {
-                None
-            } else {
-                Some(self.form_state.password.clone())
-            };
-            
-            let key_passphrase = if self.form_state.key_passphrase.is_empty() {
-                None
-            } else {
-                Some(self.form_state.key_passphrase.clone())
-            };
-
-            let connection = SshConnection {
-                name: self.form_state.name.clone(),
-                host: self.form_state.host.clone(),
-                port,
-                username: self.form_state.username.clone(),
-                password,
-                key_path,
-                key_passphrase,
-                last_connection_status: None,
-            };
-
-            self.connections[idx] = connection;
-            Ok(())
-        } else {
-            Err("No connection selected")
+        if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+            return Err("Required fields cannot be empty");
         }
+
+        self.confirm_action(ConfirmationMode::Update);
+        Ok(())
     }
 
     pub fn delete_connection(&mut self) {
-        if let Some(idx) = self.selected_connection {
-            self.connections.remove(idx);
-            if idx >= self.connections.len() && idx > 0 {
-                self.selected_connection = Some(idx - 1);
-            }
-        }
-    }
-
-    pub fn select_ssh_key(&mut self, direction: i8) {
-        if self.form_state.active_field == 5 && !self.ssh_keys.is_empty() {
-            let total_keys = self.ssh_keys.len();
-            let current = self.form_state.selected_key.unwrap_or(0);
-            
-            let next_idx = if direction > 0 {
-                (current + 1) % total_keys
-            } else {
-                if current == 0 {
-                    total_keys - 1
-                } else {
-                    current - 1
-                }
-            };
-            
-            self.form_state.selected_key = Some(next_idx);
+        if self.selected_connection.is_some() {
+            self.confirm_action(ConfirmationMode::Delete);
         }
     }
 
@@ -447,6 +546,9 @@ impl App {
             let mut sess = Session::new()
                 .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
             sess.set_tcp_stream(tcp);
+            
+            sess.set_blocking(true);
+            
             sess.handshake()
                 .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
 
@@ -497,6 +599,8 @@ impl App {
             cmd.arg("-p").arg(conn.port.to_string());
         }
         
+        cmd.arg("-o").arg("StrictHostKeyChecking=no");
+        
         let mut connection_args = Vec::new();
         
         if let Some(key_path) = &conn.key_path {
@@ -514,6 +618,7 @@ impl App {
                 cmd.arg("-p").arg(passphrase);
                 
                 cmd.arg("ssh");
+                cmd.arg("-o").arg("StrictHostKeyChecking=no");
                 for arg in ssh_args {
                     cmd.arg(arg);
                 }
@@ -611,31 +716,6 @@ impl App {
         let content = fs::read_to_string(keys_file)?;
         let paths = serde_json::from_str(&content)?;
         Ok(paths)
-    }
-
-    pub fn duplicate_connection(&mut self) -> Result<(), &'static str> {
-        if self.connections.is_empty() {
-            return Err("No connections to duplicate");
-        }
-        
-        if let Some(idx) = self.selected_connection {
-            if idx >= self.connections.len() {
-                return Err("Invalid connection selected");
-            }
-            
-            if let Some(conn) = self.connections.get(idx) {
-                let mut new_conn = conn.clone();
-                new_conn.name = format!("{} (copy)", conn.name);
-                new_conn.last_connection_status = None;
-                self.connections.push(new_conn);
-                self.selected_connection = Some(self.connections.len() - 1);
-                Ok(())
-            } else {
-                Err("Failed to get connection")
-            }
-        } else {
-            Err("No connection selected")
-        }
     }
 
     pub fn next_settings_tab(&mut self) {

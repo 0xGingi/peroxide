@@ -6,7 +6,7 @@ use crossterm::{
 };
 use ratatui::{prelude::*, widgets::*};
 use std::io;
-use peroxide::{App, AppError, FormState, InputMode, FileBrowserMode};
+use peroxide::{App, AppError, FormState, InputMode, FileBrowserMode, ConfirmationMode};
 
 fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
@@ -66,13 +66,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     }
                     KeyCode::Char('d') => {
                         app.delete_connection();
-                        app.save_connections()?;
                     }
                     KeyCode::Char('y') => {
                         if let Err(e) = app.duplicate_connection() {
                             app.show_error(e);
-                        } else {
-                            app.save_connections()?;
                         }
                     }
                     KeyCode::Up => {
@@ -211,9 +208,8 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                             InputMode::Editing => app.update_connection(),
                             _ => unreachable!(),
                         };
-                        if result.is_ok() {
-                            app.save_connections()?;
-                            app.input_mode = InputMode::Normal;
+                        if let Err(e) = result {
+                            app.show_error(e);
                         }
                     }
                     KeyCode::Char(c) => app.add_char(c),
@@ -225,8 +221,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     KeyCode::Left => {
                         if app.form_state.active_field == 5 {
                             app.select_ssh_key(-1)
-                        } else {
-                            app.form_state.selected_key = None
                         }
                     },
                     _ => {}
@@ -339,6 +333,21 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     }
                     _ => {}
                 },
+                InputMode::Confirmation(_mode) => match key.code {
+                    KeyCode::Esc => app.cancel_confirmation(),
+                    KeyCode::Left | KeyCode::Right => app.toggle_confirmation_selection(),
+                    KeyCode::Enter => {
+                        if app.confirmation_selected {
+                            if let Err(e) = app.perform_confirmed_action() {
+                                app.show_error(e);
+                            } else {
+                                app.save_connections()?;
+                            }
+                        }
+                        app.input_mode = InputMode::Normal;
+                    }
+                    _ => {}
+                },
             }
         }
     }
@@ -365,6 +374,7 @@ fn ui(f: &mut Frame, app: &App) {
         InputMode::Adding | InputMode::Editing => render_form(f, app, chunks[1]),
         InputMode::Settings => render_settings(f, app, chunks[1]),
         InputMode::FileBrowser(_mode) => render_file_browser(f, app, chunks[1]),
+        InputMode::Confirmation(mode) => render_confirmation(f, app, chunks[1], mode),
     }
 
     let help = match &app.input_mode {
@@ -373,6 +383,7 @@ fn ui(f: &mut Frame, app: &App) {
         InputMode::Editing => "Esc: Cancel | Tab: Next Field | Enter: Update | ←→: Select SSH Key",
         InputMode::Settings => "Esc: Back | Tab: Switch Tab | ↑↓: Navigate | Enter: Select | d: Delete Key",
         InputMode::FileBrowser(_mode) => "Esc: Cancel | ↑↓: Navigate | Enter: Select/Enter Directory",
+        InputMode::Confirmation(_) => "Esc: Cancel | ←→: Navigate | Enter: Confirm Selection",
     };
 
     let help = Paragraph::new(help)
@@ -469,11 +480,33 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(input, chunks[i]);
     }
 
-    let key_items = app.ssh_keys
-        .iter()
-        .enumerate()
-        .map(|(i, path)| {
-            let is_selected = Some(i) == app.form_state.selected_key;
+    let key_items = {
+        let mut items = Vec::new();
+        
+        let is_none_selected = match app.form_state.selected_key {
+            Some(0) => true,
+            _ => false
+        };
+        
+        let none_display_text = if is_none_selected {
+            "《 none 》".to_string()
+        } else {
+            "  none  ".to_string()
+        };
+        
+        items.push(Span::styled(
+            none_display_text,
+            if is_none_selected {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            }
+        ));
+        
+        for (i, path) in app.ssh_keys.iter().enumerate() {
+            let is_selected = app.form_state.selected_key == Some(i + 1);
             let file_name = path.file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
@@ -485,7 +518,7 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
                 format!("  {}  ", file_name)
             };
 
-            Span::styled(
+            items.push(Span::styled(
                 display_text,
                 if is_selected {
                     Style::default()
@@ -494,9 +527,11 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
                 } else {
                     Style::default()
                 }
-            )
-        })
-        .collect::<Vec<_>>();
+            ));
+        }
+        
+        items
+    };
 
     let key_text = Line::from(key_items);
     
@@ -536,16 +571,42 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         ListItem::new("Current SSH Keys:"),
     ];
 
-    let mut key_items: Vec<ListItem> = app.ssh_keys
+    let mut key_items: Vec<ListItem> = if let InputMode::Editing = app.input_mode {
+        if app.form_state.selected_key == Some(0) {
+            vec![ListItem::new("  none (current)")]
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
+
+    key_items.extend(app.ssh_keys
         .iter()
-        .map(|path| {
-            ListItem::new(format!("  {}", 
-                path.file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-            ))
-        })
-        .collect();
+        .enumerate()
+        .map(|(i, path)| {
+            let is_current = if let InputMode::Editing = app.input_mode {
+                app.form_state.selected_key == Some(i + 1)
+            } else {
+                false
+            };
+            
+            let label = if is_current {
+                format!("  {} (current)", 
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                )
+            } else {
+                format!("  {}", 
+                    path.file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                )
+            };
+            
+            ListItem::new(label)
+        }));
 
     let mut all_items = items;
     all_items.append(&mut key_items);
@@ -585,4 +646,118 @@ fn render_file_browser(f: &mut Frame, app: &App, area: Rect) {
             &mut ListState::default().with_selected(Some(browser.selected)),
         );
     }
+}
+
+fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &ConfirmationMode) {
+    let prompt = match mode {
+        ConfirmationMode::Delete => "Are you sure you want to delete this connection?",
+        ConfirmationMode::Duplicate => "Are you sure you want to duplicate this connection?",
+        ConfirmationMode::Update => "Are you sure you want to save these changes?",
+    };
+
+    let dialog_area = Rect {
+        x: area.x + area.width / 4,
+        y: area.y + area.height / 3,
+        width: area.width / 2,
+        height: area.height / 3,
+    };
+
+    let dialog = Block::default()
+        .title(prompt)
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    f.render_widget(Clear, dialog_area);
+    f.render_widget(dialog, dialog_area);
+
+    let centered_button_layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
+        .split(dialog_area);
+    
+    let left_half = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(60),
+            Constraint::Length(12),
+            Constraint::Percentage(40),
+        ])
+        .split(centered_button_layout[0]);
+    
+    let right_half = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(12),
+            Constraint::Percentage(60),
+        ])
+        .split(centered_button_layout[1]);
+    
+    let button_y = dialog_area.y + (dialog_area.height * 2/3) - 2;
+    let button_height = 3;
+    
+    let no_button_area = Rect {
+        x: left_half[1].x,
+        y: button_y,
+        width: left_half[1].width,
+        height: button_height,
+    };
+    
+    let yes_button_area = Rect {
+        x: right_half[1].x,
+        y: button_y,
+        width: right_half[1].width,
+        height: button_height,
+    };
+
+    let no_style = if !app.confirmation_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+    };
+
+    let yes_style = if app.confirmation_selected {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Green)
+    } else {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::DarkGray)
+    };
+
+    let no_button = Paragraph::new(" No ")
+        .alignment(Alignment::Center)
+        .style(no_style)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(
+                if !app.confirmation_selected {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default()
+                }
+            ));
+    
+    let yes_button = Paragraph::new(" Yes ")
+        .alignment(Alignment::Center)
+        .style(yes_style)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_style(
+                if app.confirmation_selected {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default()
+                }
+            ));
+    
+    f.render_widget(no_button, no_button_area);
+    f.render_widget(yes_button, yes_button_area);
 } 
