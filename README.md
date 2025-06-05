@@ -29,9 +29,9 @@ A terminal-based SSH connection manager written in Rust, featuring an intuitive 
 [![git](https://img.shields.io/aur/version/peroxide-ssh-manager-git)](https://aur.archlinux.org/packages/peroxide-ssh-manager-git)
 
 
-### From Release
+### From Release (Mac Arm64 / Linux x64)
 
-Ensure you have sshpass installed from your package manager.
+Ensure you have ```sshpass``` installed from your package manager (brew/apt/pacman...etc).
 
 Download the latest release from the [Releases](https://github.com/0xgingi/peroxide/releases) page.
 
@@ -77,4 +77,4 @@ Peroxide automatically stores its configuration in:
 
 ## Notes
 
-- Windows and MacOS have not been tested
+- Windows has not been tested
