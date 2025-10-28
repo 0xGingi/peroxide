@@ -30,6 +30,7 @@ pub enum ConfirmationMode {
     Delete,
     Duplicate,
     Update,
+    Save,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -237,6 +238,9 @@ impl App {
             InputMode::Confirmation(ConfirmationMode::Update) => {
                 self.update_connection_impl()
             },
+            InputMode::Confirmation(ConfirmationMode::Save) => {
+                self.save_connection_impl()
+            },
             _ => Ok(()),
         }
     }
@@ -337,6 +341,15 @@ impl App {
     }
 
     pub fn save_connection(&mut self) -> Result<(), &'static str> {
+        if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+            return Err("Required fields cannot be empty");
+        }
+
+        self.confirm_action(ConfirmationMode::Save);
+        Ok(())
+    }
+
+    fn save_connection_impl(&mut self) -> Result<(), &'static str> {
         if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
             return Err("Required fields cannot be empty");
         }

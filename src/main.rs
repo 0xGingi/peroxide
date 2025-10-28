@@ -653,6 +653,7 @@ fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &Confirmation
         ConfirmationMode::Delete => "Are you sure you want to delete this connection?",
         ConfirmationMode::Duplicate => "Are you sure you want to duplicate this connection?",
         ConfirmationMode::Update => "Are you sure you want to save these changes?",
+        ConfirmationMode::Save => "Are you sure you want to save this connection?",
     };
 
     let dialog_area = Rect {
