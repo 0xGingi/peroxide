@@ -23,6 +23,7 @@ pub enum InputMode {
     Settings,
     FileBrowser(FileBrowserMode),
     Confirmation(ConfirmationMode),
+    Search,
 }
 
 #[derive(Debug, PartialEq, Copy, Clone)]
@@ -82,6 +83,8 @@ pub struct App {
     pub settings_selected_item: usize,
     pub file_browser: Option<FileBrowser>,
     pub confirmation_selected: bool,
+    pub search_query: String,
+    pub search_selected: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -153,6 +156,8 @@ impl App {
             settings_selected_item: 0,
             file_browser: None,
             confirmation_selected: false,
+            search_query: String::new(),
+            search_selected: None,
         }
     }
 
@@ -525,6 +530,44 @@ impl App {
         }
     }
 
+    pub fn filtered_indices(&self) -> Vec<usize> {
+        if self.search_query.trim().is_empty() {
+            return (0..self.connections.len()).collect();
+        }
+        let q = self.search_query.to_lowercase();
+        self.connections
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| {
+                let hay = format!("{} {} {} {} {}", c.name, c.username, c.host, c.port, if let Some(k) = &c.key_path { k.to_string_lossy() } else { "".into() });
+                if hay.to_lowercase().contains(&q) { Some(i) } else { None }
+            })
+            .collect()
+    }
+
+    pub fn reset_search(&mut self) {
+        self.search_query.clear();
+        self.search_selected = None;
+    }
+
+    pub fn move_selected_up(&mut self) {
+        if let Some(idx) = self.selected_connection {
+            if idx > 0 && idx < self.connections.len() {
+                self.connections.swap(idx, idx - 1);
+                self.selected_connection = Some(idx - 1);
+            }
+        }
+    }
+
+    pub fn move_selected_down(&mut self) {
+        if let Some(idx) = self.selected_connection {
+            if idx + 1 < self.connections.len() {
+                self.connections.swap(idx, idx + 1);
+                self.selected_connection = Some(idx + 1);
+            }
+        }
+    }
+
     pub fn show_error<T: Into<String>>(&mut self, message: T) {
         self.error_message = Some(message.into());
     }
@@ -645,10 +688,7 @@ impl App {
                     .stdin(std::process::Stdio::inherit())
                     .stdout(std::process::Stdio::inherit())
                     .stderr(std::process::Stdio::inherit());
-                let status = cmd.status().map_err(|e| AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)))?;
-                if !status.success() {
-                    return Err(AppError::ConnectionFailed("SSH process failed".to_string()));
-                }
+                let status_result = cmd.status();
 
                 thread::sleep(Duration::from_millis(50));
 
@@ -661,8 +701,15 @@ impl App {
                 std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
                 
                 enable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e)))?;
-                
-                return Ok(true);
+
+                match status_result {
+                    Ok(_status) => {
+                        return Ok(true);
+                    }
+                    Err(e) => {
+                        return Err(AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)));
+                    }
+                }
             }
         }
         
@@ -682,10 +729,7 @@ impl App {
             .stdin(std::process::Stdio::inherit())
             .stdout(std::process::Stdio::inherit())
             .stderr(std::process::Stdio::inherit());
-        let status = cmd.status().map_err(|e| AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)))?;
-        if !status.success() {
-            return Err(AppError::ConnectionFailed("SSH process failed".to_string()));
-        }
+        let status_result = cmd.status();
 
         thread::sleep(Duration::from_millis(50));
 
@@ -698,8 +742,16 @@ impl App {
         std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
         
         enable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e)))?;
-        
-        Ok(true)
+
+        match status_result {
+            Ok(_status) => {
+                // Regardless of success/non-success, return to menu without error.
+                Ok(true)
+            }
+            Err(e) => {
+                Err(AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)))
+            }
+        }
     }
 
     pub fn save_additional_keys(&self) -> Result<()> {

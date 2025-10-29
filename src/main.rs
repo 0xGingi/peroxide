@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -61,6 +61,12 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         app.input_mode = InputMode::Adding;
                         app.form_state = FormState::new();
                     }
+                    KeyCode::Char('/') => {
+                        app.input_mode = InputMode::Search;
+                        app.search_query.clear();
+                        let filtered = app.filtered_indices();
+                        app.search_selected = if filtered.is_empty() { None } else { Some(0) };
+                    }
                     KeyCode::Char('e') => {
                         app.edit_connection();
                     }
@@ -73,7 +79,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         }
                     }
                     KeyCode::Up => {
-                        if let Some(selected) = app.selected_connection {
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            app.move_selected_up();
+                            app.save_connections()?;
+                        } else if let Some(selected) = app.selected_connection {
                             if selected > 0 {
                                 app.selected_connection = Some(selected - 1);
                             }
@@ -82,7 +91,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         }
                     }
                     KeyCode::Down => {
-                        if let Some(selected) = app.selected_connection {
+                        if key.modifiers.contains(KeyModifiers::SHIFT) {
+                            app.move_selected_down();
+                            app.save_connections()?;
+                        } else if let Some(selected) = app.selected_connection {
                             if selected < app.connections.len().saturating_sub(1) {
                                 app.selected_connection = Some(selected + 1);
                             }
@@ -194,6 +206,51 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         } else {
                             app.show_error("No connection selected");
                         }
+                    }
+                    _ => {}
+                },
+                InputMode::Search => match key.code {
+                    KeyCode::Esc => {
+                        app.reset_search();
+                        app.input_mode = InputMode::Normal;
+                    }
+                    KeyCode::Backspace => {
+                        app.search_query.pop();
+                        let filtered = app.filtered_indices();
+                        if filtered.is_empty() {
+                            app.search_selected = None;
+                        } else if let Some(s) = app.search_selected {
+                            if s >= filtered.len() { app.search_selected = Some(filtered.len() - 1); }
+                        } else {
+                            app.search_selected = Some(0);
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        app.search_query.push(c);
+                        let filtered = app.filtered_indices();
+                        app.search_selected = if filtered.is_empty() { None } else { Some(0) };
+                    }
+                    KeyCode::Up => {
+                        if let Some(sel) = app.search_selected {
+                            if sel > 0 { app.search_selected = Some(sel - 1); }
+                        }
+                    }
+                    KeyCode::Down => {
+                        let filtered = app.filtered_indices();
+                        if let Some(sel) = app.search_selected {
+                            if sel + 1 < filtered.len() { app.search_selected = Some(sel + 1); }
+                        } else if !filtered.is_empty() {
+                            app.search_selected = Some(0);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let filtered = app.filtered_indices();
+                        if let Some(sel) = app.search_selected {
+                            if let Some(&orig_idx) = filtered.get(sel) {
+                                app.selected_connection = Some(orig_idx);
+                            }
+                        }
+                        app.input_mode = InputMode::Normal;
                     }
                     _ => {}
                 },
@@ -364,7 +421,18 @@ fn ui(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    let title = Paragraph::new("Peroxide - SSH Connection Manager")
+    let title_text = match &app.input_mode {
+        InputMode::Search => {
+            if app.search_query.is_empty() {
+                "Peroxide - SSH Connection Manager | Search: (type to filter)".to_string()
+            } else {
+                format!("Peroxide - SSH Connection Manager | Search: {}", app.search_query)
+            }
+        }
+        _ => "Peroxide - SSH Connection Manager".to_string(),
+    };
+
+    let title = Paragraph::new(title_text)
         .alignment(Alignment::Center)
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(title, chunks[0]);
@@ -375,14 +443,16 @@ fn ui(f: &mut Frame, app: &App) {
         InputMode::Settings => render_settings(f, app, chunks[1]),
         InputMode::FileBrowser(_mode) => render_file_browser(f, app, chunks[1]),
         InputMode::Confirmation(mode) => render_confirmation(f, app, chunks[1], mode),
+        InputMode::Search => render_connections_filtered(f, app, chunks[1]),
     }
 
     let help = match &app.input_mode {
-        InputMode::Normal => "q: Quit | a: Add | e: Edit | d: Delete | y: Duplicate | s: Settings | ↑↓: Navigate",
+        InputMode::Normal => "q: Quit | a: Add | e: Edit | d: Delete | y: Duplicate | s: Settings | /: Search | ↑↓: Navigate | Shift+↑/↓: Reorder",
         InputMode::Adding => "Esc: Cancel | Tab: Next Field | Enter: Save | ←→: Select SSH Key",
         InputMode::Editing => "Esc: Cancel | Tab: Next Field | Enter: Update | ←→: Select SSH Key",
         InputMode::Settings => "Esc: Back | Tab: Switch Tab | ↑↓: Navigate | Enter: Select | d: Delete Key",
         InputMode::FileBrowser(_mode) => "Esc: Cancel | ↑↓: Navigate | Enter: Select/Enter Directory",
+        InputMode::Search => "Esc: Back | Type to search | ↑↓: Navigate | Enter: Select",
         InputMode::Confirmation(_) => "Esc: Cancel | ←→: Navigate | Enter: Confirm Selection",
     };
 
@@ -434,6 +504,45 @@ fn render_connections(f: &mut Frame, app: &App, area: Rect) {
         list,
         area,
         &mut ListState::default().with_selected(app.selected_connection),
+    );
+}
+
+fn render_connections_filtered(f: &mut Frame, app: &App, area: Rect) {
+    let indices = app.filtered_indices();
+    let items: Vec<ListItem> = indices
+        .iter()
+        .filter_map(|&i| app.connections.get(i))
+        .map(|conn| {
+            let auth_method = if conn.key_path.is_some() {
+                "🔑"
+            } else if conn.password.is_some() {
+                "🔒"
+            } else {
+                "❌"
+            };
+
+            let status = match conn.last_connection_status {
+                Some(true) => "✅",
+                Some(false) => "❌",
+                None => "  ",
+            };
+
+            ListItem::new(format!(
+                "{} {} {} ({}@{}:{})",
+                status, auth_method, conn.name, conn.username, conn.host, conn.port
+            ))
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().title("Connections (filtered)").borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("> ");
+
+    f.render_stateful_widget(
+        list,
+        area,
+        &mut ListState::default().with_selected(app.search_selected),
     );
 }
 

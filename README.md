@@ -64,6 +64,8 @@ Simply run `peroxide` in your terminal to launch the application.
 - `c` - Connect to selected server
 - `t` - Test selected connection
 - `s` - Open settings
+- `/` - Search/filter connections
+- `Shift+↑/↓` - Reorder connections
 - `Tab` - Switch between fields
 - `Enter` - Confirm/Submit
 - `Esc` - Cancel/Back
