@@ -1,5 +1,5 @@
-use std::path::{Path, PathBuf};
 use std::fs;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub struct FileBrowser {
@@ -21,9 +21,9 @@ impl FileBrowser {
 
     pub fn refresh_entries(&mut self) {
         let mut entries = Vec::new();
-        
+
         entries.push(self.current_path.clone());
-        
+
         if let Some(_parent) = self.current_path.parent() {
             entries.push(self.current_path.join(".."));
         }
@@ -40,7 +40,7 @@ impl FileBrowser {
         entries.sort_by(|a, b| {
             let a_is_special = a == &self.current_path || a.ends_with("..");
             let b_is_special = b == &self.current_path || b.ends_with("..");
-            
+
             if a_is_special && !b_is_special {
                 std::cmp::Ordering::Less
             } else if !a_is_special && b_is_special {
@@ -63,7 +63,7 @@ impl FileBrowser {
     pub fn enter_directory(&mut self) -> bool {
         if self.selected < self.entries.len() {
             let selected_path = &self.entries[self.selected];
-            
+
             if selected_path.ends_with("..") {
                 if let Some(parent) = self.current_path.parent() {
                     self.current_path = parent.to_path_buf();
@@ -100,14 +100,12 @@ impl FileBrowser {
             return false;
         }
 
-        let file_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-        
-        !file_name.contains("known_hosts") &&
-        !file_name.contains("authorized_keys") &&
-        !file_name.contains("config") &&
-        !file_name.ends_with(".pub")
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+        !file_name.contains("known_hosts")
+            && !file_name.contains("authorized_keys")
+            && !file_name.contains("config")
+            && !file_name.ends_with(".pub")
     }
 
     pub fn get_display_name(&self, path: &Path) -> String {
@@ -122,4 +120,4 @@ impl FileBrowser {
                 .to_string()
         }
     }
-} 
+}

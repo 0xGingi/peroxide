@@ -4,18 +4,63 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use peroxide::{
+    App, AppError, ConfirmationMode, FileBrowserMode, FormState, InputMode, SshConnection,
+};
 use ratatui::{prelude::*, widgets::*};
 use std::io;
-use peroxide::{App, AppError, FormState, InputMode, FileBrowserMode, ConfirmationMode};
+
+// Simple theme constants to keep styling consistent.
+const COLOR_PRIMARY: Color = Color::Cyan;
+const COLOR_ACCENT: Color = Color::Yellow;
+const COLOR_MUTED: Color = Color::DarkGray;
+
+fn mode_badge(mode: &InputMode) -> (&'static str, Color) {
+    match mode {
+        InputMode::Normal => ("NORMAL", Color::Green),
+        InputMode::Adding => ("ADD", Color::Yellow),
+        InputMode::Editing => ("EDIT", Color::Magenta),
+        InputMode::Settings => ("SETTINGS", Color::Cyan),
+        InputMode::FileBrowser(_) => ("FILE BROWSER", Color::Blue),
+        InputMode::Confirmation(_) => ("CONFIRM", Color::Red),
+        InputMode::Search => ("SEARCH", Color::LightBlue),
+    }
+}
+
+fn status_icon(status: Option<bool>) -> &'static str {
+    match status {
+        Some(true) => "✓",
+        Some(false) => "✗",
+        None => "·",
+    }
+}
+
+fn auth_icon(conn: &SshConnection) -> &'static str {
+    if conn.key_path.is_some() {
+        "🔑"
+    } else if conn.password.is_some() {
+        "🔒"
+    } else {
+        "—"
+    }
+}
+
+fn forward_icon(conn: &SshConnection) -> &'static str {
+    if conn.local_forward.is_some() {
+        "L"
+    } else {
+        "·"
+    }
+}
 
 fn main() -> Result<()> {
     let mut terminal = setup_terminal()?;
     let mut app = App::new();
-    
+
     if let Ok(connections) = App::load_connections() {
         app.connections = connections;
     }
-    
+
     run(&mut terminal, app)?;
     restore_terminal(&mut terminal)?;
     Ok(())
@@ -50,7 +95,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
 
         if let Event::Key(key) = event::read()? {
             app.clear_error();
-            
+
             match app.input_mode {
                 InputMode::Normal => match key.code {
                     KeyCode::Char('q') => {
@@ -105,25 +150,26 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     KeyCode::Char('c') => {
                         if let Some(idx) = app.selected_connection {
                             match app.test_connection(idx) {
-                                Ok(_) => {
-                                    match app.execute_ssh() {
-                                        Ok(needs_redraw) => {
-                                            if needs_redraw {
-                                                terminal.clear()?;
-                                                terminal.draw(|f| ui(f, &app))?;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            app.show_error(format!("Failed to execute SSH: {}", e));
+                                Ok(_) => match app.execute_ssh() {
+                                    Ok(needs_redraw) => {
+                                        if needs_redraw {
+                                            terminal.clear()?;
+                                            terminal.draw(|f| ui(f, &app))?;
                                         }
                                     }
-                                }
+                                    Err(e) => {
+                                        app.show_error(format!("Failed to execute SSH: {}", e));
+                                    }
+                                },
                                 Err(e) => match e {
                                     AppError::ConnectionFailed(msg) => {
                                         app.show_error(format!("Connection test failed: {}", msg));
                                     }
                                     AppError::AuthenticationFailed(msg) => {
-                                        app.show_error(format!("Authentication test failed: {}", msg));
+                                        app.show_error(format!(
+                                            "Authentication test failed: {}",
+                                            msg
+                                        ));
                                     }
                                     AppError::NoConnectionSelected => {
                                         app.show_error("No connection selected");
@@ -161,7 +207,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                                         app.show_error(format!("Connection test failed: {}", msg));
                                     }
                                     AppError::AuthenticationFailed(msg) => {
-                                        app.show_error(format!("Authentication test failed: {}", msg));
+                                        app.show_error(format!(
+                                            "Authentication test failed: {}",
+                                            msg
+                                        ));
                                     }
                                     AppError::NoConnectionSelected => {
                                         app.show_error("No connection selected");
@@ -178,25 +227,26 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     KeyCode::Enter => {
                         if let Some(idx) = app.selected_connection {
                             match app.test_connection(idx) {
-                                Ok(_) => {
-                                    match app.execute_ssh() {
-                                        Ok(needs_redraw) => {
-                                            if needs_redraw {
-                                                terminal.clear()?;
-                                                terminal.draw(|f| ui(f, &app))?;
-                                            }
-                                        }
-                                        Err(e) => {
-                                            app.show_error(format!("Failed to execute SSH: {}", e));
+                                Ok(_) => match app.execute_ssh() {
+                                    Ok(needs_redraw) => {
+                                        if needs_redraw {
+                                            terminal.clear()?;
+                                            terminal.draw(|f| ui(f, &app))?;
                                         }
                                     }
-                                }
+                                    Err(e) => {
+                                        app.show_error(format!("Failed to execute SSH: {}", e));
+                                    }
+                                },
                                 Err(e) => match e {
                                     AppError::ConnectionFailed(msg) => {
                                         app.show_error(format!("Connection test failed: {}", msg));
                                     }
                                     AppError::AuthenticationFailed(msg) => {
-                                        app.show_error(format!("Authentication test failed: {}", msg));
+                                        app.show_error(format!(
+                                            "Authentication test failed: {}",
+                                            msg
+                                        ));
                                     }
                                     AppError::NoConnectionSelected => {
                                         app.show_error("No connection selected");
@@ -220,7 +270,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         if filtered.is_empty() {
                             app.search_selected = None;
                         } else if let Some(s) = app.search_selected {
-                            if s >= filtered.len() { app.search_selected = Some(filtered.len() - 1); }
+                            if s >= filtered.len() {
+                                app.search_selected = Some(filtered.len() - 1);
+                            }
                         } else {
                             app.search_selected = Some(0);
                         }
@@ -232,13 +284,17 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     }
                     KeyCode::Up => {
                         if let Some(sel) = app.search_selected {
-                            if sel > 0 { app.search_selected = Some(sel - 1); }
+                            if sel > 0 {
+                                app.search_selected = Some(sel - 1);
+                            }
                         }
                     }
                     KeyCode::Down => {
                         let filtered = app.filtered_indices();
                         if let Some(sel) = app.search_selected {
-                            if sel + 1 < filtered.len() { app.search_selected = Some(sel + 1); }
+                            if sel + 1 < filtered.len() {
+                                app.search_selected = Some(sel + 1);
+                            }
                         } else if !filtered.is_empty() {
                             app.search_selected = Some(0);
                         }
@@ -271,15 +327,15 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     }
                     KeyCode::Char(c) => app.add_char(c),
                     KeyCode::Right => {
-                        if app.form_state.active_field == 5 {
+                        if app.form_state.active_field == 7 {
                             app.select_ssh_key(1)
                         }
-                    },
+                    }
                     KeyCode::Left => {
-                        if app.form_state.active_field == 5 {
+                        if app.form_state.active_field == 7 {
                             app.select_ssh_key(-1)
                         }
-                    },
+                    }
                     _ => {}
                 },
                 InputMode::Settings => match key.code {
@@ -294,7 +350,9 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                         app.settings_selected_item += 1;
                     }
                     KeyCode::Char('d') => {
-                        if app.settings_selected_item >= 3 && app.settings_selected_item < app.ssh_keys.len() + 3 {
+                        if app.settings_selected_item >= 3
+                            && app.settings_selected_item < app.ssh_keys.len() + 3
+                        {
                             let key_index = app.settings_selected_item - 3;
                             app.remove_ssh_key(key_index);
                             if let Err(e) = app.save_additional_keys() {
@@ -304,12 +362,16 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                     }
                     KeyCode::Enter => {
                         match app.settings_selected_item {
-                            0 => if let Err(e) = app.select_key_file() {
-                                app.show_error(e.to_string());
-                            },
-                            1 => if let Err(e) = app.select_key_folder() {
-                                app.show_error(e.to_string());
-                            },
+                            0 => {
+                                if let Err(e) = app.select_key_file() {
+                                    app.show_error(e.to_string());
+                                }
+                            }
+                            1 => {
+                                if let Err(e) = app.select_key_folder() {
+                                    app.show_error(e.to_string());
+                                }
+                            }
                             _ => {}
                         }
                         if let Err(e) = app.save_additional_keys() {
@@ -344,7 +406,10 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                                             if browser.is_valid_ssh_key(&path) {
                                                 app.add_key_path(path);
                                                 if let Err(e) = app.save_additional_keys() {
-                                                    app.show_error(format!("Failed to save additional keys: {}", e));
+                                                    app.show_error(format!(
+                                                        "Failed to save additional keys: {}",
+                                                        e
+                                                    ));
                                                 }
                                                 app.input_mode = InputMode::Settings;
                                                 app.file_browser = None;
@@ -366,16 +431,22 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                                                     }
                                                 }
                                             }
-                                            
+
                                             let added = valid_paths.len();
                                             for path in valid_paths {
                                                 app.add_key_path(path);
                                             }
-                                            
+
                                             if let Err(e) = app.save_additional_keys() {
-                                                app.show_error(format!("Failed to save additional keys: {}", e));
+                                                app.show_error(format!(
+                                                    "Failed to save additional keys: {}",
+                                                    e
+                                                ));
                                             }
-                                            app.show_error(format!("Added {} SSH keys from folder", added));
+                                            app.show_error(format!(
+                                                "Added {} SSH keys from folder",
+                                                added
+                                            ));
                                             app.input_mode = InputMode::Settings;
                                             app.file_browser = None;
                                         } else if path.ends_with("..") {
@@ -416,26 +487,12 @@ fn ui(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3),
-            Constraint::Length(1),
+            Constraint::Length(4),
+            Constraint::Length(2),
         ])
         .split(f.area());
 
-    let title_text = match &app.input_mode {
-        InputMode::Search => {
-            if app.search_query.is_empty() {
-                "Peroxide - SSH Connection Manager | Search: (type to filter)".to_string()
-            } else {
-                format!("Peroxide - SSH Connection Manager | Search: {}", app.search_query)
-            }
-        }
-        _ => "Peroxide - SSH Connection Manager".to_string(),
-    };
-
-    let title = Paragraph::new(title_text)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(title, chunks[0]);
+    render_header(f, app, chunks[0]);
 
     match &app.input_mode {
         InputMode::Normal => render_connections(f, app, chunks[1]),
@@ -446,104 +503,406 @@ fn ui(f: &mut Frame, app: &App) {
         InputMode::Search => render_connections_filtered(f, app, chunks[1]),
     }
 
-    let help = match &app.input_mode {
-        InputMode::Normal => "q: Quit | a: Add | e: Edit | d: Delete | y: Duplicate | s: Settings | /: Search | ↑↓: Navigate | Shift+↑/↓: Reorder",
-        InputMode::Adding => "Esc: Cancel | Tab: Next Field | Enter: Save | ←→: Select SSH Key",
-        InputMode::Editing => "Esc: Cancel | Tab: Next Field | Enter: Update | ←→: Select SSH Key",
-        InputMode::Settings => "Esc: Back | Tab: Switch Tab | ↑↓: Navigate | Enter: Select | d: Delete Key",
-        InputMode::FileBrowser(_mode) => "Esc: Cancel | ↑↓: Navigate | Enter: Select/Enter Directory",
-        InputMode::Search => "Esc: Back | Type to search | ↑↓: Navigate | Enter: Select",
-        InputMode::Confirmation(_) => "Esc: Cancel | ←→: Navigate | Enter: Confirm Selection",
-    };
-
-    let help = Paragraph::new(help)
-        .alignment(Alignment::Center)
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(help, chunks[2]);
-
-    if let Some(error) = &app.error_message {
-        let error_message = Paragraph::new(error.as_str())
-            .style(Style::default().fg(Color::Red))
-            .alignment(Alignment::Center);
-        f.render_widget(error_message, chunks[3]);
-    }
+    render_help(f, app, chunks[2]);
+    render_status(f, app, chunks[3]);
 }
 
-fn render_connections(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .connections
-        .iter()
-        .map(|conn| {
-            let auth_method = if conn.key_path.is_some() {
-                "🔑"
-            } else if conn.password.is_some() {
-                "🔒"
+fn render_header(f: &mut Frame, app: &App, area: Rect) {
+    let (mode_text, mode_color) = mode_badge(&app.input_mode);
+    let selected_label = app
+        .selected_connection
+        .and_then(|idx| app.connections.get(idx))
+        .map(|c| format!("Selected: {}", c.name))
+        .unwrap_or_else(|| "Selected: none".to_string());
+
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            " Peroxide ",
+            Style::default()
+                .fg(COLOR_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" • "),
+        Span::styled(
+            mode_text,
+            Style::default().fg(mode_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" • "),
+        Span::styled(
+            format!("Connections: {}", app.connections.len()),
+            Style::default().fg(Color::White),
+        ),
+        Span::raw(" • "),
+        Span::styled(selected_label, Style::default().fg(COLOR_ACCENT)),
+    ])];
+
+    if let InputMode::Search = app.input_mode {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Search",
+                Style::default()
+                    .fg(Color::LightBlue)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(": "),
+            Span::raw(if app.search_query.is_empty() {
+                "(type to filter)".into()
             } else {
-                "❌"
-            };
+                app.search_query.clone()
+            }),
+        ]));
+    }
 
-            let status = match conn.last_connection_status {
-                Some(true) => "✅",
-                Some(false) => "❌",
-                None => "  ",
-            };
-            
-            ListItem::new(format!(
-                "{} {} {} ({}@{}:{})",
-                status, auth_method, conn.name, conn.username, conn.host, conn.port
-            ))
-        })
-        .collect();
+    let header = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL));
+    f.render_widget(header, area);
+}
 
-    let list = List::new(items)
-        .block(Block::default().title("Connections").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol("> ");
+fn render_help(f: &mut Frame, app: &App, area: Rect) {
+    let accent = Style::default()
+        .fg(COLOR_ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let lines: Vec<Line> = match &app.input_mode {
+        InputMode::Normal => vec![
+            Line::from(vec![
+                Span::styled("Navigation: ", accent),
+                Span::raw("↑/↓ select  •  Shift+↑/↓ reorder  •  / search"),
+            ]),
+            Line::from(vec![
+                Span::styled("Actions: ", accent),
+                Span::raw("Enter or c connect  •  t test  •  s settings"),
+            ]),
+            Line::from(vec![
+                Span::styled("Manage: ", accent),
+                Span::raw("a add  •  e edit  •  y duplicate  •  d delete  •  q quit"),
+            ]),
+        ],
+        InputMode::Adding | InputMode::Editing => vec![Line::from(vec![
+            Span::styled("Form: ", accent),
+            Span::raw(
+                "Tab next  •  Shift+Tab prev  •  ←/→ choose SSH key  •  Enter save  •  Esc cancel",
+            ),
+        ])],
+        InputMode::Settings => vec![Line::from(vec![
+            Span::styled("Settings: ", accent),
+            Span::raw("↑/↓ move  •  Enter add key/file  •  d delete key  •  Esc back"),
+        ])],
+        InputMode::FileBrowser(_) => vec![Line::from(vec![
+            Span::styled("Browser: ", accent),
+            Span::raw("↑/↓ move  •  Enter open/select  •  Esc back"),
+        ])],
+        InputMode::Search => vec![Line::from(vec![
+            Span::styled("Search: ", accent),
+            Span::raw("type to filter  •  ↑/↓ move  •  Enter select  •  Esc cancel"),
+        ])],
+        InputMode::Confirmation(_) => vec![Line::from(vec![
+            Span::styled("Confirm: ", accent),
+            Span::raw("←/→ choose  •  Enter confirm  •  Esc cancel"),
+        ])],
+    };
 
-    f.render_stateful_widget(
-        list,
-        area,
-        &mut ListState::default().with_selected(app.selected_connection),
-    );
+    let help = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Keys"));
+    f.render_widget(help, area);
+}
+
+fn render_status(f: &mut Frame, app: &App, area: Rect) {
+    let (line, style) = if let Some(err) = &app.error_message {
+        (
+            Line::from(vec![
+                Span::styled(
+                    "⚠ ",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(err.clone(), Style::default().fg(Color::Red)),
+            ]),
+            Style::default(),
+        )
+    } else {
+        let ready = Line::from(vec![
+            Span::styled("Ready", Style::default().fg(Color::Green)),
+            Span::raw(" • "),
+            Span::styled(
+                format!(
+                    "{} connection(s)  •  {} SSH key(s)",
+                    app.connections.len(),
+                    app.ssh_keys.len()
+                ),
+                Style::default().fg(Color::Gray),
+            ),
+        ]);
+        (ready, Style::default())
+    };
+
+    let widget = Paragraph::new(line)
+        .style(style)
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Status"));
+    f.render_widget(widget, area);
+}
+fn render_connections(f: &mut Frame, app: &App, area: Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+
+    render_connection_table(f, app, chunks[0], app.selected_connection, false);
+    render_connection_details(f, app, chunks[1], app.selected_connection);
 }
 
 fn render_connections_filtered(f: &mut Frame, app: &App, area: Rect) {
     let indices = app.filtered_indices();
-    let items: Vec<ListItem> = indices
+    let selected_actual = app
+        .search_selected
+        .and_then(|idx| indices.get(idx))
+        .copied();
+
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+
+    render_connection_table_filtered(f, app, chunks[0], &indices);
+    render_connection_details(f, app, chunks[1], selected_actual);
+}
+
+fn render_connection_table(
+    f: &mut Frame,
+    app: &App,
+    area: Rect,
+    selection: Option<usize>,
+    filtered: bool,
+) {
+    if app.connections.is_empty() {
+        render_empty_state(
+            f,
+            area,
+            "No connections yet. Press 'a' to add your first one.",
+        );
+        return;
+    }
+
+    let rows: Vec<Row> = app
+        .connections
         .iter()
-        .filter_map(|&i| app.connections.get(i))
-        .map(|conn| {
-            let auth_method = if conn.key_path.is_some() {
-                "🔑"
-            } else if conn.password.is_some() {
-                "🔒"
+        .enumerate()
+        .map(|(i, conn)| {
+            let host = format!("{}@{}", conn.username, conn.host);
+            let port = conn.port.to_string();
+            Row::new(vec![
+                status_icon(conn.last_connection_status).to_string(),
+                auth_icon(conn).to_string(),
+                forward_icon(conn).to_string(),
+                conn.name.clone(),
+                host,
+                port,
+            ])
+            .style(if Some(i) == selection {
+                Style::default().fg(COLOR_PRIMARY)
             } else {
-                "❌"
-            };
-
-            let status = match conn.last_connection_status {
-                Some(true) => "✅",
-                Some(false) => "❌",
-                None => "  ",
-            };
-
-            ListItem::new(format!(
-                "{} {} {} ({}@{}:{})",
-                status, auth_method, conn.name, conn.username, conn.host, conn.port
-            ))
+                Style::default()
+            })
         })
         .collect();
 
-    let list = List::new(items)
-        .block(Block::default().title("Connections (filtered)").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(4),
+        Constraint::Percentage(28),
+        Constraint::Percentage(46),
+        Constraint::Length(6),
+    ];
+
+    let header = Row::new(vec!["St", "Auth", "Fwd", "Name", "Host", "Port"])
+        .style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1);
+
+    let mut state = TableState::default().with_selected(selection);
+
+    let title = if filtered {
+        "Connections (filtered)"
+    } else {
+        "Connections"
+    };
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("> ");
 
-    f.render_stateful_widget(
-        list,
-        area,
-        &mut ListState::default().with_selected(app.search_selected),
-    );
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+fn render_connection_table_filtered(f: &mut Frame, app: &App, area: Rect, indices: &[usize]) {
+    if indices.is_empty() {
+        render_empty_state(
+            f,
+            area,
+            "No matches. Keep typing or press Esc to cancel search.",
+        );
+        return;
+    }
+
+    let rows: Vec<Row> = indices
+        .iter()
+        .filter_map(|&i| app.connections.get(i).map(|conn| (i, conn)))
+        .map(|(_i, conn)| {
+            let host = format!("{}@{}", conn.username, conn.host);
+            let port = conn.port.to_string();
+            Row::new(vec![
+                status_icon(conn.last_connection_status).to_string(),
+                auth_icon(conn).to_string(),
+                forward_icon(conn).to_string(),
+                conn.name.clone(),
+                host,
+                port,
+            ])
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Length(3),
+        Constraint::Length(3),
+        Constraint::Length(4),
+        Constraint::Percentage(28),
+        Constraint::Percentage(46),
+        Constraint::Length(6),
+    ];
+
+    let header = Row::new(vec!["St", "Auth", "Fwd", "Name", "Host", "Port"])
+        .style(
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::BOLD),
+        )
+        .bottom_margin(1);
+
+    let mut state = TableState::default().with_selected(app.search_selected);
+
+    let table = Table::new(rows, widths)
+        .header(header)
+        .block(
+            Block::default()
+                .title("Connections (filtered)")
+                .borders(Borders::ALL),
+        )
+        .row_highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ");
+
+    f.render_stateful_widget(table, area, &mut state);
+}
+
+fn render_connection_details(f: &mut Frame, app: &App, area: Rect, selection: Option<usize>) {
+    let block = Block::default().title("Details").borders(Borders::ALL);
+    if let Some(conn) = selection.and_then(|idx| app.connections.get(idx)) {
+        let label_style = Style::default().fg(COLOR_ACCENT);
+        let status_line = match conn.last_connection_status {
+            Some(true) => Line::from(Span::styled(
+                "Last test: success",
+                Style::default().fg(Color::Green),
+            )),
+            Some(false) => Line::from(Span::styled(
+                "Last test: failed",
+                Style::default().fg(Color::Red),
+            )),
+            None => Line::from(Span::styled(
+                "Last test: not run",
+                Style::default().fg(COLOR_MUTED),
+            )),
+        };
+
+        let auth_detail = if conn.key_path.is_some() {
+            "SSH key"
+        } else if conn.password.is_some() {
+            "Password"
+        } else {
+            "None configured"
+        };
+
+        let forward_detail = if let Some(fwd) = &conn.local_forward {
+            fwd.as_str()
+        } else {
+            "None"
+        };
+
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("Name: ", label_style),
+                Span::raw(&conn.name),
+            ]),
+            Line::from(vec![
+                Span::styled("Host: ", label_style),
+                Span::raw(format!("{}:{}", conn.host, conn.port)),
+            ]),
+            Line::from(vec![
+                Span::styled("User: ", label_style),
+                Span::raw(&conn.username),
+            ]),
+            Line::from(vec![
+                Span::styled("Auth: ", label_style),
+                Span::raw(auth_detail),
+            ]),
+            Line::from(vec![
+                Span::styled("Forward: ", label_style),
+                Span::raw(forward_detail),
+            ]),
+        ];
+
+        if let Some(key) = &conn.key_path {
+            lines.push(Line::from(vec![
+                Span::styled("Key: ", label_style),
+                Span::raw(key.to_string_lossy().to_string()),
+            ]));
+        }
+
+        if let Some(pass) = &conn.password {
+            if !pass.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Password: ", label_style),
+                    Span::raw("••• stored"),
+                ]));
+            }
+        }
+
+        lines.push(status_line);
+
+        let detail = Paragraph::new(lines)
+            .block(block)
+            .alignment(Alignment::Left);
+        f.render_widget(detail, area);
+    } else {
+        render_empty_state(f, area, "Select a connection to see details.");
+    }
+}
+
+fn render_empty_state(f: &mut Frame, area: Rect, message: &str) {
+    let widget = Paragraph::new(message)
+        .style(Style::default().fg(COLOR_MUTED))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Nothing here yet"),
+        );
+    f.render_widget(widget, area);
 }
 
 fn render_form(f: &mut Frame, app: &App, area: Rect) {
@@ -551,6 +910,8 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         .direction(Direction::Vertical)
         .margin(1)
         .constraints([
+            Constraint::Length(3), // banner
+            Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
             Constraint::Length(3),
@@ -561,6 +922,22 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
+    let form_title = if matches!(app.input_mode, InputMode::Adding) {
+        "Add new connection"
+    } else {
+        "Edit connection"
+    };
+
+    let banner = Paragraph::new(form_title)
+        .style(
+            Style::default()
+                .fg(COLOR_PRIMARY)
+                .add_modifier(Modifier::BOLD),
+        )
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::ALL).title("Form"));
+    f.render_widget(banner, chunks[0]);
+
     let form_fields = [
         ("Name", &app.form_state.name),
         ("Host", &app.form_state.host),
@@ -568,11 +945,15 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         ("Username", &app.form_state.username),
         ("Password", &app.form_state.password),
         ("Key Passphrase", &app.form_state.key_passphrase),
+        (
+            "Local Forward (e.g. 8080:127.0.0.1:80)",
+            &app.form_state.local_forward,
+        ),
     ];
 
     for (i, (title, content)) in form_fields.iter().enumerate() {
         let style = if app.form_state.active_field == i {
-            Style::default().fg(Color::Yellow)
+            Style::default().fg(COLOR_PRIMARY)
         } else {
             Style::default()
         };
@@ -586,37 +967,35 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
         let input = Paragraph::new(display_content)
             .style(style)
             .block(Block::default().title(*title).borders(Borders::ALL));
-        f.render_widget(input, chunks[i]);
+        f.render_widget(input, chunks[i + 1]);
     }
 
     let key_items = {
         let mut items = Vec::new();
-        
-        let is_none_selected = match app.form_state.selected_key {
-            Some(0) => true,
-            _ => false
-        };
-        
+
+        let is_none_selected = matches!(app.form_state.selected_key, Some(0));
+
         let none_display_text = if is_none_selected {
             "《 none 》".to_string()
         } else {
             "  none  ".to_string()
         };
-        
+
         items.push(Span::styled(
             none_display_text,
             if is_none_selected {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(COLOR_PRIMARY)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
-            }
+            },
         ));
-        
+
         for (i, path) in app.ssh_keys.iter().enumerate() {
             let is_selected = app.form_state.selected_key == Some(i + 1);
-            let file_name = path.file_name()
+            let file_name = path
+                .file_name()
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
@@ -631,40 +1010,37 @@ fn render_form(f: &mut Frame, app: &App, area: Rect) {
                 display_text,
                 if is_selected {
                     Style::default()
-                        .fg(Color::Yellow)
+                        .fg(COLOR_PRIMARY)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
-                }
+                },
             ));
         }
-        
+
         items
     };
 
     let key_text = Line::from(key_items);
-    
-    let key_paragraph = Paragraph::new(key_text)
-        .alignment(Alignment::Center)
-        .block(Block::default()
+
+    let key_paragraph = Paragraph::new(key_text).alignment(Alignment::Center).block(
+        Block::default()
             .title("SSH Key (←→ to select)")
             .borders(Borders::ALL)
-            .style(if app.form_state.active_field == 5 {
-                Style::default().fg(Color::Yellow)
+            .style(if app.form_state.active_field == 7 {
+                Style::default().fg(COLOR_PRIMARY)
             } else {
                 Style::default()
-            }));
+            }),
+    );
 
-    f.render_widget(key_paragraph, chunks[6]);
+    f.render_widget(key_paragraph, chunks[8]);
 }
 
 fn render_settings(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(20),
-            Constraint::Percentage(80),
-        ])
+        .constraints([Constraint::Percentage(20), Constraint::Percentage(80)])
         .split(area);
 
     let tabs = vec!["SSH Keys"];
@@ -690,32 +1066,27 @@ fn render_settings(f: &mut Frame, app: &App, area: Rect) {
         Vec::new()
     };
 
-    key_items.extend(app.ssh_keys
-        .iter()
-        .enumerate()
-        .map(|(i, path)| {
-            let is_current = if let InputMode::Editing = app.input_mode {
-                app.form_state.selected_key == Some(i + 1)
-            } else {
-                false
-            };
-            
-            let label = if is_current {
-                format!("  {} (current)", 
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                )
-            } else {
-                format!("  {}", 
-                    path.file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                )
-            };
-            
-            ListItem::new(label)
-        }));
+    key_items.extend(app.ssh_keys.iter().enumerate().map(|(i, path)| {
+        let is_current = if let InputMode::Editing = app.input_mode {
+            app.form_state.selected_key == Some(i + 1)
+        } else {
+            false
+        };
+
+        let label = if is_current {
+            format!(
+                "  {} (current)",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )
+        } else {
+            format!(
+                "  {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            )
+        };
+
+        ListItem::new(label)
+    }));
 
     let mut all_items = items;
     all_items.append(&mut key_items);
@@ -781,12 +1152,9 @@ fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &Confirmation
 
     let centered_button_layout = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(dialog_area);
-    
+
     let left_half = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -795,7 +1163,7 @@ fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &Confirmation
             Constraint::Percentage(40),
         ])
         .split(centered_button_layout[0]);
-    
+
     let right_half = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -804,17 +1172,17 @@ fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &Confirmation
             Constraint::Percentage(60),
         ])
         .split(centered_button_layout[1]);
-    
-    let button_y = dialog_area.y + (dialog_area.height * 2/3) - 2;
+
+    let button_y = dialog_area.y + (dialog_area.height * 2 / 3) - 2;
     let button_height = 3;
-    
+
     let no_button_area = Rect {
         x: left_half[1].x,
         y: button_y,
         width: left_half[1].width,
         height: button_height,
     };
-    
+
     let yes_button_area = Rect {
         x: right_half[1].x,
         y: button_y,
@@ -823,51 +1191,40 @@ fn render_confirmation(f: &mut Frame, app: &App, area: Rect, mode: &Confirmation
     };
 
     let no_style = if !app.confirmation_selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Green)
+        Style::default().fg(Color::Black).bg(Color::Green)
     } else {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::DarkGray)
+        Style::default().fg(Color::White).bg(Color::DarkGray)
     };
 
     let yes_style = if app.confirmation_selected {
-        Style::default()
-            .fg(Color::Black)
-            .bg(Color::Green)
+        Style::default().fg(Color::Black).bg(Color::Green)
     } else {
-        Style::default()
-            .fg(Color::White)
-            .bg(Color::DarkGray)
+        Style::default().fg(Color::White).bg(Color::DarkGray)
     };
 
     let no_button = Paragraph::new(" No ")
         .alignment(Alignment::Center)
         .style(no_style)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(
-                if !app.confirmation_selected {
-                    Style::default().fg(Color::Green)
-                } else {
-                    Style::default()
-                }
-            ));
-    
-    let yes_button = Paragraph::new(" Yes ")
-        .alignment(Alignment::Center)
-        .style(yes_style)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .border_style(
+        .block(Block::default().borders(Borders::ALL).border_style(
+            if !app.confirmation_selected {
+                Style::default().fg(Color::Green)
+            } else {
+                Style::default()
+            },
+        ));
+
+    let yes_button =
+        Paragraph::new(" Yes ")
+            .alignment(Alignment::Center)
+            .style(yes_style)
+            .block(Block::default().borders(Borders::ALL).border_style(
                 if app.confirmation_selected {
                     Style::default().fg(Color::Green)
                 } else {
                     Style::default()
-                }
+                },
             ));
-    
+
     f.render_widget(no_button, no_button_area);
     f.render_widget(yes_button, yes_button_area);
-} 
+}

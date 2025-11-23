@@ -1,15 +1,15 @@
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::fs;
-use anyhow::{Result, Context};
-use ssh2::Session;
-use std::net::TcpStream;
-use std::process::Command;
-use std::fmt;
-use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
+use anyhow::{Context, Result};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use crossterm::terminal::{Clear, ClearType};
+use serde::{Deserialize, Serialize};
+use ssh2::Session;
+use std::fmt;
+use std::fs;
 use std::io::Write;
+use std::net::TcpStream;
+use std::path::PathBuf;
+use std::process::Command;
 use std::thread;
 use std::time::Duration;
 mod file_browser;
@@ -49,6 +49,8 @@ pub struct SshConnection {
     pub password: Option<String>,
     pub key_path: Option<PathBuf>,
     pub key_passphrase: Option<String>,
+    #[serde(default)]
+    pub local_forward: Option<String>,
     #[serde(skip)]
     pub last_connection_status: Option<bool>,
 }
@@ -66,6 +68,7 @@ pub struct FormState {
     pub username: String,
     pub password: String,
     pub key_passphrase: String,
+    pub local_forward: String,
     pub selected_key: Option<usize>,
     pub active_field: usize,
 }
@@ -113,6 +116,7 @@ impl FormState {
             username: String::new(),
             password: String::new(),
             key_passphrase: String::new(),
+            local_forward: String::new(),
             selected_key: None,
             active_field: 0,
         }
@@ -128,22 +132,21 @@ impl App {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.is_file() {
-                        let file_name = path.file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("");
-                        
-                        if !file_name.contains("known_hosts") &&
-                           !file_name.contains("authorized_keys") &&
-                           !file_name.contains("config") &&
-                           !file_name.ends_with(".pub") &&
-                           !file_name.starts_with(".") {
+                        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+
+                        if !file_name.contains("known_hosts")
+                            && !file_name.contains("authorized_keys")
+                            && !file_name.contains("config")
+                            && !file_name.ends_with(".pub")
+                            && !file_name.starts_with(".")
+                        {
                             ssh_keys.push(path);
                         }
                     }
                 }
             }
         }
-        
+
         Self {
             connections: Vec::new(),
             ssh_keys,
@@ -173,37 +176,53 @@ impl App {
             3 => self.form_state.username.push(c),
             4 => self.form_state.password.push(c),
             5 => self.form_state.key_passphrase.push(c),
+            6 => self.form_state.local_forward.push(c),
             _ => {}
         }
     }
 
     pub fn delete_char(&mut self) {
         match self.form_state.active_field {
-            0 => { self.form_state.name.pop(); }
-            1 => { self.form_state.host.pop(); }
-            2 => { self.form_state.port.pop(); }
-            3 => { self.form_state.username.pop(); }
-            4 => { self.form_state.password.pop(); }
-            5 => { self.form_state.key_passphrase.pop(); }
+            0 => {
+                self.form_state.name.pop();
+            }
+            1 => {
+                self.form_state.host.pop();
+            }
+            2 => {
+                self.form_state.port.pop();
+            }
+            3 => {
+                self.form_state.username.pop();
+            }
+            4 => {
+                self.form_state.password.pop();
+            }
+            5 => {
+                self.form_state.key_passphrase.pop();
+            }
+            6 => {
+                self.form_state.local_forward.pop();
+            }
             _ => {}
         }
     }
 
     pub fn next_field(&mut self) {
-        self.form_state.active_field = (self.form_state.active_field + 1) % 6;
+        self.form_state.active_field = (self.form_state.active_field + 1) % 8;
     }
 
     pub fn previous_field(&mut self) {
         if self.form_state.active_field > 0 {
             self.form_state.active_field -= 1;
         } else {
-            self.form_state.active_field = 5;
+            self.form_state.active_field = 7;
         }
     }
 
     pub fn select_ssh_key(&mut self, direction: i32) {
         let total_keys = self.ssh_keys.len() + 1;
-        
+
         let new_selected = match self.form_state.selected_key {
             Some(current) => {
                 let new_val = (current as i32 + direction) % total_keys as i32;
@@ -214,13 +233,17 @@ impl App {
                 }
             }
             None => {
-                if direction > 0 { 0 } else { total_keys - 1 }
+                if direction > 0 {
+                    0
+                } else {
+                    total_keys - 1
+                }
             }
         };
-        
+
         self.form_state.selected_key = Some(new_selected);
     }
-    
+
     pub fn confirm_action(&mut self, mode: ConfirmationMode) {
         self.input_mode = InputMode::Confirmation(mode);
         self.confirmation_selected = false;
@@ -236,38 +259,34 @@ impl App {
                     }
                 }
                 Ok(())
-            },
+            }
             InputMode::Confirmation(ConfirmationMode::Duplicate) => {
                 self.duplicate_connection_impl()
-            },
-            InputMode::Confirmation(ConfirmationMode::Update) => {
-                self.update_connection_impl()
-            },
-            InputMode::Confirmation(ConfirmationMode::Save) => {
-                self.save_connection_impl()
-            },
+            }
+            InputMode::Confirmation(ConfirmationMode::Update) => self.update_connection_impl(),
+            InputMode::Confirmation(ConfirmationMode::Save) => self.save_connection_impl(),
             _ => Ok(()),
         }
     }
-    
+
     pub fn cancel_confirmation(&mut self) {
         self.input_mode = InputMode::Normal;
     }
-    
+
     pub fn toggle_confirmation_selection(&mut self) {
         self.confirmation_selected = !self.confirmation_selected;
     }
-    
+
     fn duplicate_connection_impl(&mut self) -> Result<(), &'static str> {
         if self.connections.is_empty() {
             return Err("No connections to duplicate");
         }
-        
+
         if let Some(idx) = self.selected_connection {
             if idx >= self.connections.len() {
                 return Err("Invalid connection selected");
             }
-            
+
             if let Some(conn) = self.connections.get(idx) {
                 let mut new_conn = conn.clone();
                 new_conn.name = format!("{} (copy)", conn.name);
@@ -287,18 +306,21 @@ impl App {
         if self.connections.is_empty() {
             return Err("No connections to duplicate");
         }
-        
+
         if self.selected_connection.is_none() {
             return Err("No connection selected");
         }
-        
+
         self.confirm_action(ConfirmationMode::Duplicate);
         Ok(())
     }
-    
+
     fn update_connection_impl(&mut self) -> Result<(), &'static str> {
         if let Some(idx) = self.selected_connection {
-            if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+            if self.form_state.name.is_empty()
+                || self.form_state.host.is_empty()
+                || self.form_state.username.is_empty()
+            {
                 return Err("Required fields cannot be empty");
             }
 
@@ -320,11 +342,17 @@ impl App {
             } else {
                 Some(self.form_state.password.clone())
             };
-            
+
             let key_passphrase = if self.form_state.key_passphrase.is_empty() {
                 None
             } else {
                 Some(self.form_state.key_passphrase.clone())
+            };
+
+            let local_forward = if self.form_state.local_forward.trim().is_empty() {
+                None
+            } else {
+                Some(self.form_state.local_forward.trim().to_string())
             };
 
             let connection = SshConnection {
@@ -335,6 +363,7 @@ impl App {
                 password,
                 key_path,
                 key_passphrase,
+                local_forward,
                 last_connection_status: None,
             };
 
@@ -346,7 +375,10 @@ impl App {
     }
 
     pub fn save_connection(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+        if self.form_state.name.is_empty()
+            || self.form_state.host.is_empty()
+            || self.form_state.username.is_empty()
+        {
             return Err("Required fields cannot be empty");
         }
 
@@ -355,7 +387,10 @@ impl App {
     }
 
     fn save_connection_impl(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+        if self.form_state.name.is_empty()
+            || self.form_state.host.is_empty()
+            || self.form_state.username.is_empty()
+        {
             return Err("Required fields cannot be empty");
         }
 
@@ -377,11 +412,17 @@ impl App {
         } else {
             Some(self.form_state.password.clone())
         };
-        
+
         let key_passphrase = if self.form_state.key_passphrase.is_empty() {
             None
         } else {
             Some(self.form_state.key_passphrase.clone())
+        };
+
+        let local_forward = if self.form_state.local_forward.trim().is_empty() {
+            None
+        } else {
+            Some(self.form_state.local_forward.trim().to_string())
         };
 
         let connection = SshConnection {
@@ -392,6 +433,7 @@ impl App {
             password,
             key_path,
             key_passphrase,
+            local_forward,
             last_connection_status: None,
         };
 
@@ -403,10 +445,10 @@ impl App {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?
             .join("peroxide");
-        
+
         fs::create_dir_all(&config_dir)?;
         let config_file = config_dir.join("connections.json");
-        
+
         if !config_file.exists() {
             return Ok(Vec::new());
         }
@@ -420,10 +462,10 @@ impl App {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?
             .join("peroxide");
-        
+
         fs::create_dir_all(&config_dir)?;
         let config_file = config_dir.join("connections.json");
-        
+
         let content = serde_json::to_string_pretty(&self.connections)?;
         fs::write(config_file, content)?;
         Ok(())
@@ -433,7 +475,10 @@ impl App {
         if let Some(idx) = self.selected_connection {
             let connection_data = if let Some(conn) = self.connections.get(idx) {
                 let selected_key = if let Some(key_path) = &conn.key_path {
-                    self.ssh_keys.iter().position(|p| p == key_path).map(|pos| pos + 1)
+                    self.ssh_keys
+                        .iter()
+                        .position(|p| p == key_path)
+                        .map(|pos| pos + 1)
                 } else {
                     Some(0)
                 };
@@ -445,13 +490,24 @@ impl App {
                     conn.username.clone(),
                     conn.password.clone().unwrap_or_default(),
                     conn.key_passphrase.clone().unwrap_or_default(),
+                    conn.local_forward.clone().unwrap_or_default(),
                     selected_key,
                 ))
             } else {
                 None
             };
 
-            if let Some((name, host, port, username, password, key_passphrase, selected_key)) = connection_data {
+            if let Some((
+                name,
+                host,
+                port,
+                username,
+                password,
+                key_passphrase,
+                local_forward,
+                selected_key,
+            )) = connection_data
+            {
                 self.form_state = FormState {
                     name,
                     host,
@@ -459,6 +515,7 @@ impl App {
                     username,
                     password,
                     key_passphrase,
+                    local_forward,
                     selected_key,
                     active_field: 0,
                 };
@@ -468,7 +525,10 @@ impl App {
     }
 
     pub fn update_connection(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty() || self.form_state.host.is_empty() || self.form_state.username.is_empty() {
+        if self.form_state.name.is_empty()
+            || self.form_state.host.is_empty()
+            || self.form_state.username.is_empty()
+        {
             return Err("Required fields cannot be empty");
         }
 
@@ -483,14 +543,15 @@ impl App {
     }
 
     pub fn connect_to_selected(&self) -> Result<(), AppError> {
-        let idx = self.selected_connection.ok_or(AppError::NoConnectionSelected)?;
+        let idx = self
+            .selected_connection
+            .ok_or(AppError::NoConnectionSelected)?;
         let conn = &self.connections[idx];
-        
+
         let tcp = TcpStream::connect(&format!("{}:{}", conn.host, conn.port))
             .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
-        
-        let mut sess = Session::new()
-            .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
+
+        let mut sess = Session::new().map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
         sess.set_tcp_stream(tcp);
         sess.handshake()
             .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
@@ -501,21 +562,25 @@ impl App {
                 None,
                 key_path,
                 conn.key_passphrase.as_deref(),
-            ).map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
+            )
+            .map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
         } else if let Some(password) = &conn.password {
             sess.userauth_password(&conn.username, password)
                 .map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
         } else {
             return Err(AppError::AuthenticationFailed(
-                "No authentication method provided".to_string()
+                "No authentication method provided".to_string(),
             ));
         }
 
-        let mut channel = sess.channel_session()
+        let mut channel = sess
+            .channel_session()
             .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
-        channel.shell()
+        channel
+            .shell()
             .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
-        channel.request_pty("xterm", None, None)
+        channel
+            .request_pty("xterm", None, None)
             .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
 
         Ok(())
@@ -539,8 +604,24 @@ impl App {
             .iter()
             .enumerate()
             .filter_map(|(i, c)| {
-                let hay = format!("{} {} {} {} {}", c.name, c.username, c.host, c.port, if let Some(k) = &c.key_path { k.to_string_lossy() } else { "".into() });
-                if hay.to_lowercase().contains(&q) { Some(i) } else { None }
+                let hay = format!(
+                    "{} {} {} {} {} {}",
+                    c.name,
+                    c.username,
+                    c.host,
+                    c.port,
+                    if let Some(k) = &c.key_path {
+                        k.to_string_lossy()
+                    } else {
+                        "".into()
+                    },
+                    c.local_forward.as_ref().map(|s| s.as_str()).unwrap_or("")
+                );
+                if hay.to_lowercase().contains(&q) {
+                    Some(i)
+                } else {
+                    None
+                }
             })
             .collect()
     }
@@ -592,19 +673,18 @@ impl App {
         if idx >= self.connections.len() {
             return Err(AppError::NoConnectionSelected);
         }
-        
+
         let conn = &mut self.connections[idx];
-        
+
         let result = (|| {
             let tcp = TcpStream::connect(format!("{}:{}", conn.host, conn.port))
                 .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
-            
-            let mut sess = Session::new()
-                .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
+
+            let mut sess = Session::new().map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
             sess.set_tcp_stream(tcp);
-            
+
             sess.set_blocking(true);
-            
+
             sess.handshake()
                 .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
 
@@ -614,13 +694,14 @@ impl App {
                     None,
                     key_path,
                     conn.key_passphrase.as_deref(),
-                ).map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
+                )
+                .map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
             } else if let Some(password) = &conn.password {
                 sess.userauth_password(&conn.username, password)
                     .map_err(|e| AppError::AuthenticationFailed(e.to_string()))?;
             } else {
                 return Err(AppError::AuthenticationFailed(
-                    "No authentication method provided".to_string()
+                    "No authentication method provided".to_string(),
                 ));
             }
             Ok(())
@@ -631,13 +712,15 @@ impl App {
     }
 
     pub fn execute_ssh(&self) -> Result<bool, AppError> {
-        let idx = self.selected_connection.ok_or(AppError::NoConnectionSelected)?;
+        let idx = self
+            .selected_connection
+            .ok_or(AppError::NoConnectionSelected)?;
         if idx >= self.connections.len() {
             return Err(AppError::NoConnectionSelected);
         }
-        
+
         let conn = &self.connections[idx];
-        
+
         let mut cmd;
         if let Some(password) = &conn.password {
             if conn.key_path.is_none() {
@@ -650,39 +733,54 @@ impl App {
         } else {
             cmd = Command::new("ssh");
         }
-        
+
         if conn.port != 22 {
             cmd.arg("-p").arg(conn.port.to_string());
         }
-        
+
         cmd.arg("-o").arg("StrictHostKeyChecking=no");
-        
+
         let mut connection_args = Vec::new();
-        
+
+        if let Some(fwd) = &conn.local_forward {
+            connection_args.push("-L".to_string());
+            connection_args.push(fwd.clone());
+        }
+
         if let Some(key_path) = &conn.key_path {
             connection_args.push("-i".to_string());
             connection_args.push(key_path.to_string_lossy().to_string());
-            
+
             if let Some(passphrase) = &conn.key_passphrase {
                 let mut ssh_args = connection_args.clone();
-                
+
                 let conn_string = format!("{}@{}", conn.username, conn.host);
                 ssh_args.push(conn_string);
-                
+
                 cmd = Command::new("sshpass");
                 cmd.arg("-P").arg("Enter passphrase for key");
                 cmd.arg("-p").arg(passphrase);
-                
+
                 cmd.arg("ssh");
                 cmd.arg("-o").arg("StrictHostKeyChecking=no");
                 for arg in ssh_args {
                     cmd.arg(arg);
                 }
-                
-                disable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to reset terminal mode: {}", e)))?;
-                crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen, DisableMouseCapture)
-                    .map_err(|e| AppError::ConnectionFailed(format!("Failed to leave alternate screen: {}", e)))?;
-                std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
+
+                disable_raw_mode().map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to reset terminal mode: {}", e))
+                })?;
+                crossterm::execute!(
+                    std::io::stdout(),
+                    crossterm::terminal::LeaveAlternateScreen,
+                    DisableMouseCapture
+                )
+                .map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to leave alternate screen: {}", e))
+                })?;
+                std::io::stdout().flush().map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e))
+                })?;
 
                 cmd.env("TERM", "xterm-256color")
                     .stdin(std::process::Stdio::inherit())
@@ -697,33 +795,53 @@ impl App {
                     Clear(ClearType::All),
                     crossterm::terminal::EnterAlternateScreen,
                     EnableMouseCapture
-                ).map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal state: {}", e)))?;
-                std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
-                
-                enable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e)))?;
+                )
+                .map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to restore terminal state: {}", e))
+                })?;
+                std::io::stdout().flush().map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e))
+                })?;
+
+                enable_raw_mode().map_err(|e| {
+                    AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e))
+                })?;
 
                 match status_result {
                     Ok(_status) => {
                         return Ok(true);
                     }
                     Err(e) => {
-                        return Err(AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)));
+                        return Err(AppError::ConnectionFailed(format!(
+                            "Failed to execute SSH: {}",
+                            e
+                        )));
                     }
                 }
             }
         }
-        
+
         for arg in connection_args {
             cmd.arg(arg);
         }
-        
+
         let connection_string = format!("{}@{}", conn.username, conn.host);
         cmd.arg(connection_string);
 
-        disable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to reset terminal mode: {}", e)))?;
-        crossterm::execute!(std::io::stdout(), crossterm::terminal::LeaveAlternateScreen, DisableMouseCapture)
-            .map_err(|e| AppError::ConnectionFailed(format!("Failed to leave alternate screen: {}", e)))?;
-        std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
+        disable_raw_mode().map_err(|e| {
+            AppError::ConnectionFailed(format!("Failed to reset terminal mode: {}", e))
+        })?;
+        crossterm::execute!(
+            std::io::stdout(),
+            crossterm::terminal::LeaveAlternateScreen,
+            DisableMouseCapture
+        )
+        .map_err(|e| {
+            AppError::ConnectionFailed(format!("Failed to leave alternate screen: {}", e))
+        })?;
+        std::io::stdout()
+            .flush()
+            .map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
 
         cmd.env("TERM", "xterm-256color")
             .stdin(std::process::Stdio::inherit())
@@ -738,19 +856,27 @@ impl App {
             Clear(ClearType::All),
             crossterm::terminal::EnterAlternateScreen,
             EnableMouseCapture
-        ).map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal state: {}", e)))?;
-        std::io::stdout().flush().map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
-        
-        enable_raw_mode().map_err(|e| AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e)))?;
+        )
+        .map_err(|e| {
+            AppError::ConnectionFailed(format!("Failed to restore terminal state: {}", e))
+        })?;
+        std::io::stdout()
+            .flush()
+            .map_err(|e| AppError::ConnectionFailed(format!("Failed to flush stdout: {}", e)))?;
+
+        enable_raw_mode().map_err(|e| {
+            AppError::ConnectionFailed(format!("Failed to restore terminal mode: {}", e))
+        })?;
 
         match status_result {
             Ok(_status) => {
                 // Regardless of success/non-success, return to menu without error.
                 Ok(true)
             }
-            Err(e) => {
-                Err(AppError::ConnectionFailed(format!("Failed to execute SSH: {}", e)))
-            }
+            Err(e) => Err(AppError::ConnectionFailed(format!(
+                "Failed to execute SSH: {}",
+                e
+            ))),
         }
     }
 
@@ -758,10 +884,10 @@ impl App {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?
             .join("peroxide");
-        
+
         fs::create_dir_all(&config_dir)?;
         let keys_file = config_dir.join("additional_keys.json");
-        
+
         let content = serde_json::to_string_pretty(&self.additional_key_paths)?;
         fs::write(keys_file, content)?;
         Ok(())
@@ -771,9 +897,9 @@ impl App {
         let config_dir = dirs::config_dir()
             .context("Could not find config directory")?
             .join("peroxide");
-        
+
         let keys_file = config_dir.join("additional_keys.json");
-        
+
         if !keys_file.exists() {
             return Ok(Vec::new());
         }
@@ -783,21 +909,24 @@ impl App {
         Ok(paths)
     }
 
-    pub fn next_settings_tab(&mut self) {
-    }
+    pub fn next_settings_tab(&mut self) {}
 
     pub fn remove_ssh_key(&mut self, index: usize) {
         if index < self.ssh_keys.len() {
             let path = self.ssh_keys[index].clone();
             self.ssh_keys.remove(index);
-            
-            if let Some(additional_index) = self.additional_key_paths.iter().position(|p| p == &path) {
+
+            if let Some(additional_index) =
+                self.additional_key_paths.iter().position(|p| p == &path)
+            {
                 self.additional_key_paths.remove(additional_index);
             }
-            
-            if self.settings_selected_item > 3 && self.settings_selected_item >= 3 + self.ssh_keys.len() {
+
+            if self.settings_selected_item > 3
+                && self.settings_selected_item >= 3 + self.ssh_keys.len()
+            {
                 self.settings_selected_item -= 1;
             }
         }
     }
-} 
+}
