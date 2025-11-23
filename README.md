@@ -2,7 +2,7 @@
 
 A terminal-based SSH connection manager written in Rust, featuring an intuitive TUI interface for managing and connecting to your SSH servers.
 
-![image](https://github.com/user-attachments/assets/8719615d-fbd7-4420-a953-2752fc1677ae)![image](https://github.com/user-attachments/assets/f575ef87-c0d7-4efe-bc77-e5b063d8b6dc)
+<img width="1168" height="715" alt="Screenshot 2025-11-23 at 8 46 30 AM" src="https://github.com/user-attachments/assets/46d14971-b384-491c-b23e-7e8ed2c2b696" />
 
 
 
