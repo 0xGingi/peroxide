@@ -1,0 +1,148 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect Cargo.toml version bump
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          current_version="$(
+            python3 -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("Cargo.toml").read_text())["package"]["version"])'
+          )"
+
+          previous_version=""
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            before="${{ github.event.before }}"
+            if [[ -n "$before" ]] && git cat-file -e "$before:Cargo.toml" 2>/dev/null; then
+              previous_version="$(
+                git show "$before:Cargo.toml" |
+                  python3 -c 'import sys, tomllib; print(tomllib.loads(sys.stdin.read())["package"]["version"])'
+              )"
+            fi
+          fi
+
+          should_release="false"
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            should_release="true"
+          elif [[ -n "$current_version" && "$current_version" != "$previous_version" ]]; then
+            should_release="true"
+          fi
+
+          {
+            echo "version=$current_version"
+            echo "tag=v$current_version"
+            echo "should_release=$should_release"
+          } >> "$GITHUB_OUTPUT"
+
+          if [[ "$should_release" != "true" ]]; then
+            echo "Cargo.toml package version did not change; skipping release."
+          fi
+
+  build:
+    name: Build ${{ matrix.asset_name }}
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset_name: peroxide-linux-x64
+            runner: ubuntu-latest
+          - asset_name: peroxide-linux-arm64
+            runner: ubuntu-24.04-arm
+          - asset_name: peroxide-mac-arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Rename binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "target/release/peroxide" "${{ matrix.asset_name }}"
+          chmod +x "${{ matrix.asset_name }}"
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: ${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs:
+      - version
+      - build
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.version.outputs.tag }}"
+          if ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            git tag "$tag" "${{ github.sha }}"
+            git push origin "$tag"
+          fi
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ needs.version.outputs.tag }}"
+          title="Peroxide ${{ needs.version.outputs.version }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/peroxide-* --clobber
+          else
+            gh release create "$tag" dist/peroxide-* \
+              --title "$title" \
+              --notes "Release $tag"
+          fi
