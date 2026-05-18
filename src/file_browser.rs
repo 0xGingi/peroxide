@@ -109,7 +109,7 @@ impl FileBrowser {
     }
 
     pub fn get_display_name(&self, path: &Path) -> String {
-        if path == &self.current_path {
+        if path == self.current_path {
             ".".to_string()
         } else if path.ends_with("..") {
             "..".to_string()

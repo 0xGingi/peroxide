@@ -7,13 +7,15 @@ use ssh2::Session;
 use std::fmt;
 use std::fs;
 use std::io::Write;
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 mod file_browser;
 use file_browser::FileBrowser;
+
+const CONNECTION_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, PartialEq)]
 pub enum InputMode {
@@ -55,11 +57,6 @@ pub struct SshConnection {
     pub last_connection_status: Option<bool>,
 }
 
-#[derive(Debug)]
-pub enum SettingsTab {
-    SshKeys,
-}
-
 #[derive(Debug, Clone)]
 pub struct FormState {
     pub name: String,
@@ -82,7 +79,6 @@ pub struct App {
     pub input_mode: InputMode,
     pub form_state: FormState,
     pub error_message: Option<String>,
-    pub settings_tab: SettingsTab,
     pub settings_selected_item: usize,
     pub file_browser: Option<FileBrowser>,
     pub confirmation_selected: bool,
@@ -123,6 +119,12 @@ impl FormState {
     }
 }
 
+impl Default for FormState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl App {
     pub fn new() -> Self {
         let mut ssh_keys = Vec::new();
@@ -155,7 +157,6 @@ impl App {
             input_mode: InputMode::Normal,
             form_state: FormState::new(),
             error_message: None,
-            settings_tab: SettingsTab::SshKeys,
             settings_selected_item: 0,
             file_browser: None,
             confirmation_selected: false,
@@ -169,7 +170,7 @@ impl App {
             0 => self.form_state.name.push(c),
             1 => self.form_state.host.push(c),
             2 => {
-                if c.is_digit(10) {
+                if c.is_ascii_digit() {
                     self.form_state.port.push(c);
                 }
             }
@@ -317,56 +318,7 @@ impl App {
 
     fn update_connection_impl(&mut self) -> Result<(), &'static str> {
         if let Some(idx) = self.selected_connection {
-            if self.form_state.name.is_empty()
-                || self.form_state.host.is_empty()
-                || self.form_state.username.is_empty()
-            {
-                return Err("Required fields cannot be empty");
-            }
-
-            let port = self.form_state.port.parse().unwrap_or(22);
-            if port == 0 {
-                return Err("Invalid port number");
-            }
-
-            let key_path = self.form_state.selected_key.and_then(|idx| {
-                if idx == 0 || idx > self.ssh_keys.len() {
-                    None
-                } else {
-                    Some(self.ssh_keys[idx - 1].clone())
-                }
-            });
-
-            let password = if self.form_state.password.is_empty() {
-                None
-            } else {
-                Some(self.form_state.password.clone())
-            };
-
-            let key_passphrase = if self.form_state.key_passphrase.is_empty() {
-                None
-            } else {
-                Some(self.form_state.key_passphrase.clone())
-            };
-
-            let local_forward = if self.form_state.local_forward.trim().is_empty() {
-                None
-            } else {
-                Some(self.form_state.local_forward.trim().to_string())
-            };
-
-            let connection = SshConnection {
-                name: self.form_state.name.clone(),
-                host: self.form_state.host.clone(),
-                port,
-                username: self.form_state.username.clone(),
-                password,
-                key_path,
-                key_passphrase,
-                local_forward,
-                last_connection_status: None,
-            };
-
+            let connection = self.connection_from_form()?;
             self.connections[idx] = connection;
             Ok(())
         } else {
@@ -375,29 +327,33 @@ impl App {
     }
 
     pub fn save_connection(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty()
-            || self.form_state.host.is_empty()
-            || self.form_state.username.is_empty()
-        {
-            return Err("Required fields cannot be empty");
-        }
+        self.validate_form()?;
 
         self.confirm_action(ConfirmationMode::Save);
         Ok(())
     }
 
     fn save_connection_impl(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty()
-            || self.form_state.host.is_empty()
-            || self.form_state.username.is_empty()
+        let connection = self.connection_from_form()?;
+        self.connections.push(connection);
+        Ok(())
+    }
+
+    fn validate_form(&self) -> Result<(), &'static str> {
+        if self.form_state.name.trim().is_empty()
+            || self.form_state.host.trim().is_empty()
+            || self.form_state.username.trim().is_empty()
         {
             return Err("Required fields cannot be empty");
         }
 
-        let port = self.form_state.port.parse().unwrap_or(22);
-        if port == 0 {
-            return Err("Invalid port number");
-        }
+        Self::parse_port(&self.form_state.port)?;
+        Self::parse_local_forward(&self.form_state.local_forward)?;
+        Ok(())
+    }
+
+    fn connection_from_form(&self) -> Result<SshConnection, &'static str> {
+        self.validate_form()?;
 
         let key_path = self.form_state.selected_key.and_then(|idx| {
             if idx == 0 || idx > self.ssh_keys.len() {
@@ -419,26 +375,59 @@ impl App {
             Some(self.form_state.key_passphrase.clone())
         };
 
-        let local_forward = if self.form_state.local_forward.trim().is_empty() {
-            None
-        } else {
-            Some(self.form_state.local_forward.trim().to_string())
-        };
-
-        let connection = SshConnection {
-            name: self.form_state.name.clone(),
-            host: self.form_state.host.clone(),
-            port,
-            username: self.form_state.username.clone(),
+        Ok(SshConnection {
+            name: self.form_state.name.trim().to_string(),
+            host: self.form_state.host.trim().to_string(),
+            port: Self::parse_port(&self.form_state.port)?,
+            username: self.form_state.username.trim().to_string(),
             password,
             key_path,
             key_passphrase,
-            local_forward,
+            local_forward: Self::parse_local_forward(&self.form_state.local_forward)?,
             last_connection_status: None,
-        };
+        })
+    }
 
-        self.connections.push(connection);
-        Ok(())
+    fn parse_port(value: &str) -> Result<u16, &'static str> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err("Port is required");
+        }
+
+        let port = trimmed
+            .parse::<u16>()
+            .map_err(|_| "Port must be a number from 1 to 65535")?;
+
+        if port == 0 {
+            return Err("Port must be a number from 1 to 65535");
+        }
+
+        Ok(port)
+    }
+
+    fn parse_local_forward(value: &str) -> Result<Option<String>, &'static str> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        let parts: Vec<&str> = trimmed.split(':').collect();
+        if parts.len() != 3 {
+            return Err("Local forward must use local_port:host:remote_port");
+        }
+
+        Self::parse_port(parts[0]).map_err(|_| "Local forward has an invalid local port")?;
+        if parts[1].trim().is_empty() || parts[1].chars().any(char::is_whitespace) {
+            return Err("Local forward host cannot be empty or contain whitespace");
+        }
+        Self::parse_port(parts[2]).map_err(|_| "Local forward has an invalid remote port")?;
+
+        Ok(Some(format!(
+            "{}:{}:{}",
+            parts[0].trim(),
+            parts[1].trim(),
+            parts[2].trim()
+        )))
     }
 
     pub fn load_connections() -> Result<Vec<SshConnection>> {
@@ -525,12 +514,7 @@ impl App {
     }
 
     pub fn update_connection(&mut self) -> Result<(), &'static str> {
-        if self.form_state.name.is_empty()
-            || self.form_state.host.is_empty()
-            || self.form_state.username.is_empty()
-        {
-            return Err("Required fields cannot be empty");
-        }
+        self.validate_form()?;
 
         self.confirm_action(ConfirmationMode::Update);
         Ok(())
@@ -548,8 +532,7 @@ impl App {
             .ok_or(AppError::NoConnectionSelected)?;
         let conn = &self.connections[idx];
 
-        let tcp = TcpStream::connect(&format!("{}:{}", conn.host, conn.port))
-            .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
+        let tcp = Self::connect_tcp(&conn.host, conn.port)?;
 
         let mut sess = Session::new().map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
         sess.set_tcp_stream(tcp);
@@ -587,11 +570,9 @@ impl App {
     }
 
     pub fn add_key_path(&mut self, path: PathBuf) {
-        if path.exists() && path.is_file() {
-            if !self.ssh_keys.contains(&path) {
-                self.additional_key_paths.push(path.clone());
-                self.ssh_keys.push(path);
-            }
+        if path.exists() && path.is_file() && !self.ssh_keys.contains(&path) {
+            self.additional_key_paths.push(path.clone());
+            self.ssh_keys.push(path);
         }
     }
 
@@ -615,7 +596,7 @@ impl App {
                     } else {
                         "".into()
                     },
-                    c.local_forward.as_ref().map(|s| s.as_str()).unwrap_or("")
+                    c.local_forward.as_deref().unwrap_or("")
                 );
                 if hay.to_lowercase().contains(&q) {
                     Some(i)
@@ -677,8 +658,7 @@ impl App {
         let conn = &mut self.connections[idx];
 
         let result = (|| {
-            let tcp = TcpStream::connect(format!("{}:{}", conn.host, conn.port))
-                .map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
+            let tcp = Self::connect_tcp(&conn.host, conn.port)?;
 
             let mut sess = Session::new().map_err(|e| AppError::ConnectionFailed(e.to_string()))?;
             sess.set_tcp_stream(tcp);
@@ -709,6 +689,42 @@ impl App {
 
         conn.last_connection_status = Some(result.is_ok());
         result
+    }
+
+    fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, AppError> {
+        let address = format!("{}:{}", host, port);
+        let addrs = address
+            .to_socket_addrs()
+            .map_err(|e| AppError::ConnectionFailed(format!("Could not resolve host: {}", e)))?;
+
+        let mut last_error = None;
+        for addr in addrs {
+            match TcpStream::connect_timeout(&addr, CONNECTION_TIMEOUT) {
+                Ok(tcp) => {
+                    tcp.set_read_timeout(Some(CONNECTION_TIMEOUT))
+                        .map_err(|e| {
+                            AppError::ConnectionFailed(format!("Failed to set read timeout: {}", e))
+                        })?;
+                    tcp.set_write_timeout(Some(CONNECTION_TIMEOUT))
+                        .map_err(|e| {
+                            AppError::ConnectionFailed(format!(
+                                "Failed to set write timeout: {}",
+                                e
+                            ))
+                        })?;
+                    return Ok(tcp);
+                }
+                Err(e) => last_error = Some(e),
+            }
+        }
+
+        Err(AppError::ConnectionFailed(format!(
+            "Timed out or failed to connect within {} seconds: {}",
+            CONNECTION_TIMEOUT.as_secs(),
+            last_error
+                .map(|e| e.to_string())
+                .unwrap_or_else(|| "no resolved addresses".to_string())
+        )))
     }
 
     pub fn execute_ssh(&self) -> Result<bool, AppError> {
@@ -909,8 +925,6 @@ impl App {
         Ok(paths)
     }
 
-    pub fn next_settings_tab(&mut self) {}
-
     pub fn remove_ssh_key(&mut self, index: usize) {
         if index < self.ssh_keys.len() {
             let path = self.ssh_keys[index].clone();
@@ -928,5 +942,41 @@ impl App {
                 self.settings_selected_item -= 1;
             }
         }
+    }
+}
+
+impl Default for App {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::App;
+
+    #[test]
+    fn parse_port_rejects_empty_zero_and_out_of_range_values() {
+        assert!(App::parse_port("").is_err());
+        assert!(App::parse_port("0").is_err());
+        assert!(App::parse_port("65536").is_err());
+        assert_eq!(App::parse_port("22"), Ok(22));
+    }
+
+    #[test]
+    fn parse_local_forward_accepts_expected_format() {
+        assert_eq!(
+            App::parse_local_forward(" 8080:127.0.0.1:80 "),
+            Ok(Some("8080:127.0.0.1:80".to_string()))
+        );
+    }
+
+    #[test]
+    fn parse_local_forward_rejects_invalid_format() {
+        assert!(App::parse_local_forward("8080").is_err());
+        assert!(App::parse_local_forward("0:127.0.0.1:80").is_err());
+        assert!(App::parse_local_forward("8080::80").is_err());
+        assert!(App::parse_local_forward("8080:bad host:80").is_err());
+        assert!(App::parse_local_forward("8080:127.0.0.1:0").is_err());
     }
 }

@@ -61,8 +61,11 @@ fn main() -> Result<()> {
         app.connections = connections;
     }
 
-    run(&mut terminal, app)?;
-    restore_terminal(&mut terminal)?;
+    let run_result = run(&mut terminal, app);
+    let restore_result = restore_terminal(&mut terminal);
+
+    run_result?;
+    restore_result?;
     Ok(())
 }
 
@@ -340,7 +343,6 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                 },
                 InputMode::Settings => match key.code {
                     KeyCode::Esc => app.input_mode = InputMode::Normal,
-                    KeyCode::Tab => app.next_settings_tab(),
                     KeyCode::Up => {
                         if app.settings_selected_item > 0 {
                             app.settings_selected_item -= 1;
@@ -449,9 +451,7 @@ fn run(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, mut app: App) -> R
                                             ));
                                             app.input_mode = InputMode::Settings;
                                             app.file_browser = None;
-                                        } else if path.ends_with("..") {
-                                            browser.enter_directory();
-                                        } else if path.is_dir() {
+                                        } else if path.ends_with("..") || path.is_dir() {
                                             browser.enter_directory();
                                         }
                                     }
