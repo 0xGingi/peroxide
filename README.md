@@ -2,19 +2,19 @@
 
 A terminal-based SSH connection manager written in Rust, featuring an intuitive TUI interface for managing and connecting to your SSH servers.
 
-<img width="1168" height="715" alt="Screenshot 2025-11-23 at 8 46 30 AM" src="https://github.com/user-attachments/assets/46d14971-b384-491c-b23e-7e8ed2c2b696" />
+<img width="948" alt="Peroxide listing SSH servers, with the selected server's key, port forward, status and ssh command on the right" src="assets/screenshot.png" />
 
 
 
 ## Features
 
-- 🔑 Support for both password and SSH key authentication
+- 🔑 Password, SSH key and ssh-agent authentication
 - 📁 Automatic SSH key discovery from `.ssh` directory
 - 💾 Persistent storage of connections and settings
 - 🔄 Connection testing functionality
 - 🔍 Easy navigation with keyboard shortcuts
 - 📝 Edit, duplicate, and delete connections
-- 🎨 Terminal UI with multiple views and tabs
+- 🎨 Terminal UI with built-in color themes
 
 ## Installation
 
@@ -57,18 +57,24 @@ Simply run `peroxide` in your terminal to launch the application.
 
 ### Key Bindings
 
-- `q` - Quit
+- `Enter` / `c` - Connect to selected server
+- `t` - Test selected connection
+- `↑/↓` or `j/k` - Move selection
+- `Shift+↑/↓` or `J/K` - Reorder connections
+- `/` - Filter connections
 - `a` - Add new connection
 - `e` - Edit selected connection
+- `y` - Duplicate selected connection
 - `d` - Delete selected connection
-- `c` - Connect to selected server
-- `t` - Test selected connection
-- `s` - Open settings
-- `/` - Search/filter connections
-- `Shift+↑/↓` - Reorder connections
-- `Tab` - Switch between fields
-- `Enter` - Confirm/Submit
-- `Esc` - Cancel/Back
+- `s` - Manage SSH keys
+- `T` - Pick a color theme
+- `q` - Quit
+
+In the add/edit form, `Tab`/`↓` and `Shift+Tab`/`↑` move between fields, `←/→` picks an SSH key, `Enter` saves and `Esc` cancels.
+
+### Themes
+
+Press `T` to pick a theme; moving through the list previews it live and `Enter` keeps it. The default, **Terminal**, uses your terminal's own colors. The others are Catppuccin Mocha, Catppuccin Latte, Tokyo Night, Gruvbox Dark, Nord, Dracula, Rosé Pine and Peroxide. They need a terminal with 24-bit color, which most modern terminals have.
 
 ## Configuration
 
